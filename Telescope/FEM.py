@@ -1,11 +1,23 @@
 import numpy as np
+import sys
+
 from scipy import sparse
 from scipy.linalg import solve_lyapunov
 from scipy.sparse import linalg as slinalg
 import scipy.io as spio
 import h5py
+
 import logging
+
 import matplotlib.pyplot as plt
+
+try:
+    import cupy as cp
+    import cupyx.scipy.sparse as cps
+    CUDA_LIBRARY = True
+except:
+    print('No cupy GPU library available for CUDA processing.')
+    CUDA_LIBRARY = False
 
 logging.basicConfig()
 
@@ -30,7 +42,8 @@ def readStateSpace(filename=None,ABC=None):
         f = h5py.File(filename, 'r')
         AG=f['A']
         A = sparse.csr_matrix((np.array(AG['data']),AG['ir'],AG['jc']))
-        B,C = [sparse.csr_matrix(np.array(f[x]).T) for x in list('BC')]
+        A = A.transpose()
+        B,C = [sparse.csr_matrix(np.array(f[x]).T) for x in list('BC')]    
     if ABC is not None:
         A = sparse.csr_matrix(ABC[0])
         B = sparse.csr_matrix(ABC[1])
@@ -97,7 +110,7 @@ def ss2fem(*args):
     A,B,C = args[:3]
     h = int(A.shape[0]/2)
     O = np.sqrt(-A[h:,:h].diagonal())
-    Z= -0.5*A[h:,h:].diagonal()/O
+    Z = -0.5*A[h:,h:].diagonal()/O
     Phi = C[:,:-h]
     Phim = B[h:,:].T
     return O,Z,Phim.toarray(),Phi.toarray()
@@ -140,15 +153,19 @@ class FEM:
         if kwargs:
             self.Start(**kwargs)
 
-    def Start(self,state_space_filename=None,
+    def Start(self, state_space_filename=None,
               second_order_filename=None,
               state_space_ABC=None,
               second_order=None,
-              fem_inputs=None,fem_outputs=None,
+              fem_inputs=None, fem_outputs=None,
               reorder_RBM=False):
         self.logger.info('Start')
         if state_space_filename is not None:
             self.O,self.Z,self.Phim,self.Phi = ss2fem(*readStateSpace(filename=state_space_filename))
+            # Read the IO indexes
+            data = spio.loadmat('./dos/FEMSimuLink/FEM_IO.mat')
+            fem_inputs=[(x[0][0],y[0]) for x,y in zip(data['FEM_IO']['inputs_name'][0,0],data['FEM_IO']['inputs_size'][0][0])]
+            fem_outputs=[(x[0][0],y[0]) for x,y in zip(data['FEM_IO']['outputs_name'][0,0],data['FEM_IO']['outputs_size'][0][0])]
         if second_order_filename is not None:
             second_order,fem_inputs,fem_outputs = loadFEM2ndOrder(second_order_filename)
         if state_space_ABC is not None:
@@ -462,21 +479,50 @@ class FEM:
                            'x':np.zeros(A.shape[1]),
                            'step':0})
 
-    def Update(self,**kwargs):
+        # Initializing GPU state space
+        if CUDA_LIBRARY:
+            self.initialize_gpu_env(var_type = np.float32)
+
+    def initialize_gpu_env(self, var_type):
+        
+        self.logger.info("CUDA DEBUG: creating GPU environment...")
+        self.logger.info("GPU env. Synopsis:")
+        self.gpu = dict()
+        for element in self.state:
+            if sparse.issparse(self.state[element]):
+                print(type(self.state[element]))
+                auxiliar = cp.asarray(self.state[element].todense(), dtype = var_type)
+                __size = auxiliar.shape
+                self.gpu[element] = cps.csr_matrix(auxiliar, shape = __size, dtype = var_type)
+            else:
+                self.gpu[element] = cp.asarray(self.state[element], dtype = var_type)
+            self.logger.info("|- {0} shape : {1}".format(element, self.gpu[element].shape))
+        self.logger.info("----- Building finalized!")     
+        #sys.exit()
+
+    def Update(self, **kwargs):
         _u = self.state['u']
-        a = 0
-        b = 0
-        for t,s in self.INPUTS:
+        a, b = 0, 0
+        for t, s in self.INPUTS:
             b += s
             if t in kwargs:
                 _u[a:b] = kwargs[t]
             a += s
 
-        _x = self.state['x']
-        x_next = self.state['A']@_x + self.state['B']@_u
-        _y = self.state['C']@_x
-        self.state['x'] = x_next.flatten()
-        self.state['y'][:] = _y.ravel()
+        if CUDA_LIBRARY:
+            #sys.exit()
+            self.gpu['u']   = cp.array(_u, dtype = np.float32)
+            self.gpu['x']   = self.gpu['A'].dot(self.gpu['x']) + self.gpu['B']@self.gpu['u']
+            self.gpu['y']   = self.gpu['C'].dot(self.gpu['x'])
+            self.state['y'] = self.gpu['y'].get().ravel()
+            #sys.exit()
+        else:
+            _x = self.state['x']
+            x_next = self.state['A']@_x + self.state['B']@_u
+            _y = self.state['C']@_x
+            self.state['x'] = x_next.flatten()
+            self.state['y'][:] = _y.ravel()
+        
         self.state['step']+=1
 
     def Outputs(self,**kwargs):
@@ -500,5 +546,27 @@ class FEM:
     def Terminate(self,**kwargs):
         return "FEM deleted"
 
-    
 
+
+
+update_states = cp.ElementwiseKernel(
+    'raw X A, Y Bu, raw T st',
+    'T next',
+    '''
+        int aux = (int)i / 2;
+        int index = 2 * aux;
+
+        next = A[2*i] * st[index] + A[2*i + 1] * st[index + 1] + Bu 
+    ''',
+    'update_states'
+)
+
+
+update_states_diag = cp.ElementwiseKernel(
+    'X A, Y Bu, T st',
+    'T next',
+    '''
+        next = A * st  + Bu 
+    ''',
+    'update_states_diag'
+)

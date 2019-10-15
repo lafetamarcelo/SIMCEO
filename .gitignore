@@ -27,3 +27,5 @@ sandbox
 *.svg
 /M1
 *.zip
+*.mat
+

@@ -2,7 +2,7 @@
 ## Makefile generated for Simulink model 'Mount'. 
 ## 
 ## Makefile     : Mount.mk
-## Generated on : Fri Aug 23 11:09:26 2019
+## Generated on : Wed Sep 04 14:18:24 2019
 ## MATLAB Coder version: 4.0 (R2018a)
 ## 
 ## Build Info:
@@ -25,11 +25,11 @@
 PRODUCT_NAME              = Mount
 MAKEFILE                  = Mount.mk
 COMPUTER                  = GLNXA64
-MATLAB_ROOT               = /home/marcelo/MATLAB
-MATLAB_BIN                = /home/marcelo/MATLAB/bin
+MATLAB_ROOT               = /home/felipe/MATLAB
+MATLAB_BIN                = /home/felipe/MATLAB/bin
 MATLAB_ARCH_BIN           = $(MATLAB_BIN)/glnxa64
 MASTER_ANCHOR_DIR         = 
-START_DIR                 = /home/marcelo/Documents/gmto/CUDAIMS-ConfigApp/forCoder/mount
+START_DIR                 = /home/felipe/Documents/GMT/CUDAIMS-NSEE-v2.0/drivers/simulinkfiles/mount
 ARCH                      = glnxa64
 SOLVER                    = 
 SOLVER_OBJ                = 

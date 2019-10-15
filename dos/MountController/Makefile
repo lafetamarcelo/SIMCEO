@@ -1,4 +1,4 @@
-PYTHONPATH = /home/rconan/anaconda3
+PYTHONPATH = /home/marcelo/anaconda3
 MODELNAME = Mount
 PYVERSION = 3.7
 all: 
