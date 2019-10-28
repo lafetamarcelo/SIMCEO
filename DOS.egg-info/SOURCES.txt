@@ -1,0 +1,15 @@
+MANIFEST.in
+README.md
+setup.py
+simceo.py
+DOS.egg-info/PKG-INFO
+DOS.egg-info/SOURCES.txt
+DOS.egg-info/dependency_links.txt
+DOS.egg-info/requires.txt
+DOS.egg-info/top_level.txt
+doc/simceo_refman.pdf
+dos/__init__.py
+dos/control.py
+dos/dos.py
+dos/driver.py
+dos/mpc_driver.py

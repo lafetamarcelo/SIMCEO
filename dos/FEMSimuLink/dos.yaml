@@ -1,0 +1,208 @@
+simulation:
+  sampling frequency: 2000 # [Hertz]
+  duration: 10 # [seconds]
+  server:
+    IP: 127.0.0.1
+#    IP: 34.213.27.234
+drivers:
+  wind_loads:
+    outputs:
+      Gravity:
+        lien: [FEM, OSS_Grav_CS0]
+      Distributed:
+        lien: [FEM, M1_distributed_windF]
+      TopEnd:
+        lien: [FEM, OSS_TopEnd_6F]
+      Truss:
+        lien: [FEM, OSS_Truss_6F]
+      GIR:
+        lien: [FEM, OSS_GIR_6F]
+      CRING:
+        lien: [FEM, OSS_CRING_6F]
+      M1:
+        lien: [FEM, OSS_M1_lcl_6F]
+      M1Cell:
+        lien: [FEM, OSS_Cell_lcl_6F]
+      M2:
+        lien: [FEM, MC_M2_lcl_force_6F]
+      M2Cell:
+        lien: [FEM, MC_M2_MacroCell_F_6d]
+  FEM:
+    inputs:
+      OSS_Grav_CS0:
+        size: 3
+      OSS_AzDrive_F:
+        size: 8
+      OSS_ElDrive_F:
+        size: 8
+      OSS_GIRDrive_F:
+        size: 4
+      OSS_M1_lcl_6F:
+        size: 42
+      OSS_Cell_lcl_6F:
+        size: 42
+      OSS_CRING_6F:
+        size: 18
+      OSS_TopEnd_6F:
+        size: 6
+      OSS_GIR_6F:
+        size: 6
+      OSS_Truss_6F:
+        size: 36
+      MC_M2_lcl_force_6F:
+        size: 42
+      MC_M2_MacroCell_F_6d:
+        size: 6
+      MC_M2_PZT_S1_F:
+        size: 6
+      MC_M2_PZT_S2_F:
+        size: 6
+      MC_M2_PZT_S3_F:
+        size: 6
+      MC_M2_PZT_S4_F:
+        size: 6
+      MC_M2_PZT_S5_F:
+        size: 6
+      MC_M2_PZT_S6_F:
+        size: 6
+      MC_M2_PZT_S7_F:
+        size: 6
+      M1_distributed_windF:
+        size: 5127
+      M1_actuators_segment_1:
+        size: 335
+      M1_actuators_segment_2:
+        size: 335
+      M1_actuators_segment_3:
+        size: 335
+      M1_actuators_segment_4:
+        size: 335
+      M1_actuators_segment_5:
+        size: 335
+      M1_actuators_segment_6:
+        size: 335
+      M1_actuators_segment_7:
+        size: 306
+      OSS_Harpoint_delta_F:
+        size: 42
+    outputs:
+      OSS_AzDrive_D:
+        size: 8
+      OSS_ElDrive_D:
+        size: 8
+      OSS_GIRDrive_D:
+        size: 4
+      OSS_M1_LOS:
+        size: 42
+        logs:
+          decimation: 1
+      MC_M2_LOS_6D:
+        size: 42
+        logs:
+          decimation: 1
+      OSS_M1_lcl:
+        size: 42
+        logs:
+          decimation: 1
+      MC_M2_lcl_6D:
+        size: 42
+        logs:
+          decimation: 1
+      MC_M2_PZT_S1_D:
+        size: 6
+      MC_M2_PZT_S2_D:
+        size: 6
+      MC_M2_PZT_S3_D:
+        size: 6
+      MC_M2_PZT_S4_D:
+        size: 6
+      MC_M2_PZT_S5_D:
+        size: 6
+      MC_M2_PZT_S6_D:
+        size: 6
+      MC_M2_PZT_S7_D:
+        size: 6
+      OSS_Hardpoint_D:
+        size: 84
+  Mount:
+    server: false
+    inputs:
+      OSS_AzDrive_D:
+        lien: [FEM, OSS_AzDrive_D]
+      OSS_ElDrive_D:
+        lien: [FEM, OSS_ElDrive_D]
+      OSS_GIRDrive_D:
+        lien: [FEM, OSS_GIRDrive_D]
+    outputs:
+      OSS_AzDrive_F:
+        lien: [FEM, OSS_AzDrive_F]
+      OSS_ElDrive_F:
+        lien: [FEM, OSS_ElDrive_F]
+      OSS_GIRDrive_F:
+        lien: [FEM, OSS_GIRDrive_F]
+  M2pzt:
+    server: false
+    inputs:
+      MC_M2_PZT_S1_D:
+        lien: [FEM, MC_M2_PZT_S1_D]
+      MC_M2_PZT_S2_D:
+        lien: [FEM, MC_M2_PZT_S2_D]
+      MC_M2_PZT_S3_D:
+        lien: [FEM, MC_M2_PZT_S3_D]
+      MC_M2_PZT_S4_D:
+        lien: [FEM, MC_M2_PZT_S4_D]
+      MC_M2_PZT_S5_D:
+        lien: [FEM, MC_M2_PZT_S5_D]
+      MC_M2_PZT_S6_D:
+        lien: [FEM, MC_M2_PZT_S6_D]
+      MC_M2_PZT_S7_D:
+        lien: [FEM, MC_M2_PZT_S7_D]
+    outputs:
+      MC_M2_PZT_S1_F:
+        lien: [FEM, MC_M2_PZT_S1_F]
+      MC_M2_PZT_S2_F:
+        lien: [FEM, MC_M2_PZT_S2_F]
+      MC_M2_PZT_S3_F:
+        lien: [FEM, MC_M2_PZT_S3_F]
+      MC_M2_PZT_S4_F:
+        lien: [FEM, MC_M2_PZT_S4_F]
+      MC_M2_PZT_S5_F:
+        lien: [FEM, MC_M2_PZT_S5_F]
+      MC_M2_PZT_S6_F:
+        lien: [FEM, MC_M2_PZT_S6_F]
+      MC_M2_PZT_S7_F:
+        lien: [FEM, MC_M2_PZT_S7_F]
+  AcOshPos:
+    server: false
+    inputs:
+      OSS_M1_lcl:
+        lien: [FEM, OSS_M1_lcl]
+    outputs:
+      OSS_Harpoint_delta_F:
+        lien: [FEM, OSS_Harpoint_delta_F]
+  M1ofl:
+    server: false
+    inputs:
+      OSS_Hardpoint_Delta:
+        lien: [AcOshPos, OSS_Harpoint_delta_F]
+      OSS_Hardpoint_D:
+        lien: [FEM, OSS_Hardpoint_D]
+    outputs:
+      M1_actuators_segment_1:
+        lien: [FEM, M1_actuators_segment_1]
+      M1_actuators_segment_2:
+        lien: [FEM, M1_actuators_segment_2]
+      M1_actuators_segment_3:
+        lien: [FEM, M1_actuators_segment_3]
+      M1_actuators_segment_4:
+        lien: [FEM, M1_actuators_segment_4]
+      M1_actuators_segment_5:
+        lien: [FEM, M1_actuators_segment_5]
+      M1_actuators_segment_6:
+        lien: [FEM, M1_actuators_segment_6]
+      M1_actuators_segment_7:
+        lien: [FEM, M1_actuators_segment_7]
+
+
+
+  
