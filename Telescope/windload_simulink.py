@@ -39,7 +39,7 @@ class WindLoad:
         if savefiles_path is not None:
             self.savepath = savefiles_path
         else:
-            self.savepath = './'
+            self.savepath = './variables'
         self.fs = fs
 
         self.mem_data  = dict()
