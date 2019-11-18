@@ -1,4 +1,5 @@
 import numpy as np
+
 import sys
 
 from scipy import sparse
@@ -41,11 +42,17 @@ def readStateSpace(filename=None,ABC=None):
     tuple of numpy array: the A, B,  C and D=None matrices
     """
     if filename is not None:
-        f = h5py.File(filename, 'r')
-        AG=f['A']
-        A = sparse.csr_matrix((np.array(AG['data']),AG['ir'],AG['jc']))
-        A = A.transpose()
-        B,C = [sparse.csr_matrix(np.array(f[x]).T) for x in list('BC')]    
+        try:
+            f = h5py.File(filename, 'r')
+            AG=f['A']
+            A = sparse.csr_matrix((np.array(AG['data']),AG['ir'],AG['jc']))
+            A = A.transpose()
+            B,C = [sparse.csr_matrix(np.array(f[x]).T) for x in list('BC')]
+        except:
+            f = spio.loadmat(filename)
+            A = sparse.csr_matrix(f['A'])
+            B = sparse.csr_matrix(f['B'])
+            C = sparse.csr_matrix(f['C'])
     if ABC is not None:
         A = sparse.csr_matrix(ABC[0])
         B = sparse.csr_matrix(ABC[1])
@@ -165,7 +172,7 @@ class FEM:
         if state_space_filename is not None:
             self.O,self.Z,self.Phim,self.Phi = ss2fem(*readStateSpace(filename=state_space_filename))
             # Read the IO indexes
-            data = spio.loadmat('./dos/FEMSimuLink/FEM_IO.mat')
+            data = spio.loadmat('./dos/FEMSimuLink/FEM_IO_WBM.mat')
             fem_inputs=[(x[0][0],y[0]) for x,y in zip(data['FEM_IO']['inputs_name'][0,0],data['FEM_IO']['inputs_size'][0][0])]
             fem_outputs=[(x[0][0],y[0]) for x,y in zip(data['FEM_IO']['outputs_name'][0,0],data['FEM_IO']['outputs_size'][0][0])]
         if second_order_filename is not None:
@@ -285,7 +292,8 @@ class FEM:
 
     def gpu_c2s(self,a,b,dt):
         """
-        Convert a continuous state space model in a discrete one
+            Convert a continuous state space model in a discrete one
+        using the second order modules iterativelly.
 
         Parameters:
         -----------
@@ -559,17 +567,15 @@ class FEM:
             a += s
 
         if CUDA_LIBRARY:
-            #sys.exit()
             self.gpu['u']   = cp.array(_u, dtype = np.float32)
             self.gpu['x']   = self.gpu['A'].dot(self.gpu['x']) + self.gpu['B']@self.gpu['u']
             self.gpu['y']   = self.gpu['C'].dot(self.gpu['x'])
             self.state['y'] = self.gpu['y'].get().ravel()
-            #sys.exit()
         else:
-            _x = self.state['x']
+            _x     = self.state['x']
             x_next = self.state['A']@_x + self.state['B']@_u
-            _y = self.state['C']@_x
-            self.state['x'] = x_next.flatten()
+            _y     = self.state['C']@_x
+            self.state['x']    = x_next.flatten()
             self.state['y'][:] = _y.ravel()
         
         self.state['step']+=1

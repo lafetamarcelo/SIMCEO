@@ -124,6 +124,10 @@ drivers:
         size: 6
       OSS_Hardpoint_D:
         size: 84
+      Bending_modes:
+        size: 1144
+        logs:
+          decimation: 1
   Mount:
     server: false
     inputs:

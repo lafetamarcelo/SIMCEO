@@ -1,7 +1,7 @@
 FEM:
   build:
     #second_order_filename: dos/FEM/modal_state_space_model.py.mat
-    state_space_filename: dos/FEMSimuLink/consolidated.mat
+    state_space_filename: dos/FEMSimuLink/consolidated_withBM_clean.mat
     reorder_RBM: false
   reduction:
     hsv_rel_threshold: 0.0

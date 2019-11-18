@@ -6,6 +6,7 @@ import logging
 import h5py
 
 import scipy.io as spio
+import scipy.signal as ssig
 
 
 DEFAULT_ITEMS = ["CRING", "GIR", 
@@ -15,6 +16,11 @@ DEFAULT_ITEMS = ["CRING", "GIR",
 
 
 class WindLoad:
+
+    '''
+        The wind loads class that runs in CUDA-GPU.
+    '''
+
     def __init__(self, verbose=logging.INFO, **kwargs):
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(verbose)
@@ -22,9 +28,11 @@ class WindLoad:
         if kwargs:
             self.Start(**kwargs)
 
-    def Start(self, load_filename=None,
+    def Start(self, 
+                load_filename=None,
                 distributed_filename=None,
                 savefiles_path=None,
+                bumpless_loads=False,
                 fs=200):
         self.logger.info('Starting wind loads...')
 
@@ -32,6 +40,7 @@ class WindLoad:
             self.savepath = savefiles_path
         else:
             self.savepath = './'
+        self.fs = fs
 
         self.mem_data  = dict()
         if load_filename is not None:
@@ -78,10 +87,35 @@ class WindLoad:
         self.logger.info('  * ' + "Gravity" + ' Memory Map:')
         self.logger.info('   |- shape: ' + str(fileshape))
         self.logger.info('   |- in: ' + filename)
-        
+
+        if bumpless_loads:
+            self.logger.info(' ** Computing bumpless filter...')
+            self.bumpless_fitler()
+
         self.logger.info('*** SIMULATION MAXIMUM TIME: ' + str(self.tmax_dim / fs) + ' seconds!!')
 
         return "WindLoad"
+
+    def bumpless_fitler(self):
+
+        dt = 1 / self.fs    
+        time_vec = dt * np.array(range(self.tmax_dim))
+
+        # Create the bumpless discrete filter
+        settling_time = 3 # (seconds)
+        bump_filt_ctf = ((4.5/settling_time)**2, [1, 2*4/settling_time, (4.5/settling_time)**2])
+        bump_filt = ssig.cont2discrete(bump_filt_ctf, dt)
+
+        for element in DEFAULT_ITEMS:
+            offset = self.mem_data[element][:,0]
+            smooth_offset = np.zeros((self.mem_data[element].shape), dtype=np.float32)
+            response = ssig.step(bump_filt, T=time_vec)[0]
+            for k in range(offset.shape[0]):
+                smooth_offset[k,:] = offset[k] * response
+            # Compute the bumpless signals
+            offset = offset.reshape(offset.shape[0], 1)
+            self.mem_data[element][:,:] = self.mem_data[element][:,:] + smooth_offset - offset
+
 
     def Init(self, dt=0.5e-3, fs=20 ,
             inputs=None, outputs=None):
