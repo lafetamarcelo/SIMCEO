@@ -1,10 +1,13 @@
 import numpy as np
 
+import os
 import sys
 
 from scipy import sparse
 from scipy.linalg import solve_lyapunov
 from scipy.sparse import linalg as slinalg
+
+from multiprocessing import Manager, Process
 
 import scipy.linalg as lalg
 import scipy.io as spio
@@ -153,6 +156,36 @@ def freqrep(nu,Phi,Phim,O,Z,n_mode_max=None):
         iQ = sparse.diags(1/q)
         return Phi[:,:n_mode_max]@iQ@Phim[:,:n_mode_max].T
 
+
+def save_variable_on_disk(info):
+    '''
+        Function that is parallelized to save process variables on disk,
+        on simulation time.
+    '''
+    
+    # Create variable directory
+    if not os.path.exists(info['savepath']):
+        os.makedirs(info['savepath'])
+    var_name = info['savepath'] + info['varname'] + '.dat'
+    # Create the memory map
+    variable = np.memmap(var_name, dtype=np.float32, mode='w+', shape=info['shape'])
+    print(' * Variable created...' )
+    print('    |- keeping log of: ', info['shape'])
+    print('    |- in:', var_name)
+    # Create queue
+    q = info['queue']
+    while True: # start Deamon
+        # remove one task from Queue
+        ninfo = q.get()
+        # check if is alive
+        if ninfo['alive']:
+            variable[:,ninfo['index']] = ninfo['data'][:]
+        else:
+            del variable  # flush and save output memory map
+            break         # kill Deamon
+
+
+
 class FEM:
 
     def __init__(self,verbose=logging.INFO,**kwargs):
@@ -167,9 +200,12 @@ class FEM:
               state_space_ABC=None,
               second_order=None,
               fem_inputs=None, fem_outputs=None,
-              reorder_RBM=False):
+              reorder_RBM=False,
+              log_states=False, log_path='./variables/', log_type=np.float32,
+              bending_modes = None):
         self.logger.info('Start')
         if state_space_filename is not None:
+            self.model_file_name = state_space_filename
             self.O,self.Z,self.Phim,self.Phi = ss2fem(*readStateSpace(filename=state_space_filename))
             # Read the IO indexes
             data = spio.loadmat('./dos/FEMSimuLink/FEM_IO_WBM.mat')
@@ -190,7 +226,17 @@ class FEM:
         self.__setprop__()
         if reorder_RBM:
             self.reorder_rbm()
+        
+        self.log_states = log_states
+        if self.log_states:
+            self.stateLogInfo = {'path': log_path, 'vartype': log_type}
+
+        self.bendmodes = bending_modes
+        if self.bendmodes is not None:
+            self.log_bendmodes = True
+
         self.info()
+
         return "FEM"
 
     def __setprop__(self):
@@ -308,6 +354,7 @@ class FEM:
         --------
         ad, bd : the discrete state space A and B matrices
         """
+
         ss = a.shape[0] // 2
 
         I_2 = a[ss:,:ss].diagonal()
@@ -350,6 +397,7 @@ class FEM:
         --------
         A,B,C : the state space A, B and C matrices
         """
+
         s = self.N,self.N
         OZ = self.O*self.Z;
         OZ[np.isnan(OZ)] = 0
@@ -525,6 +573,7 @@ class FEM:
               inputs=None,outputs=None,
               hsv_rel_threshold=None,n_mode_max=None,
               start_idx=0):
+        
         self.logger.info('Init')
         self.hsv_sort(start_idx=start_idx)
         self.reduce(inputs=inputs,outputs=outputs,
@@ -539,12 +588,100 @@ class FEM:
 
         # Initializing GPU state space
         if CUDA_LIBRARY:
-            self.initialize_gpu_env(var_type = np.float32)
+            self._initialize_gpu_env(var_type = np.float32)
+        
+        # Create the state logging process
+        if self.log_states:
+            _shape_ = (A.shape[0], 20000)
+            self._start_state_logging(self.stateLogInfo['path'], _shape_, self.stateLogInfo['vartype'])
 
-    def initialize_gpu_env(self, var_type):
+        # Create the bending modes setup
+        if self.bendmodes is not None:
+            self._setup_bending_modes()
+        
+        self.logger.info('      RUNNING SIMULATION...')
+
+
+    def _setup_bending_modes(self):
+        """
+        Setup the data to compute the bending modes.
+
+        """
+        self.logger.info("CPU PARALLEL: parallel logging process...")
+        self.logger.info(" * Bending Modes *")
+
+        if self.bendmodes is None:
+            self.logger.info('------- BM ERROR -------')
+            pass
+        
+        # Read the PTT matrix from matlab files
+        try:
+            self.bendmodes['_ptt'] = spio.loadmat(self.bendmodes['ptt_path'])['Q_']
+        except:
+            self.bendmodes['_ptt'] = h5py.File(self.bendmodes['ptt_path'], 'r')['Q_']
+        
+        self.bendmodes['gpu_ptt'] = cp.asarray(self.bendmodes['_ptt'], dtype=np.float32)
+
+        # Get the output indexes of displaciments
+        _index, _name = 0, self.bendmodes['output_name']
+        for item in self.OUTPUTS:
+            if item[0] == _name:
+                _size = item[1] // 3
+                self.bendmodes['disp_indexes'] = range(_index + 2, _index + _size + 2, 3)
+                _name = '___Dummie___'
+            else:
+                _index += item[1]
+        
+        if _name != '___Dummie___':
+            self.logger.info('------- BM ERROR -------')
+            self.logger.info('Error: No entry called ' + _name + ' was found!')
+        
+        # Create the process to save in parallel the bending modes
+        _shape = (_size, 20000)
+        _savepath = './variables/bendingmodes/'
+    
+        self.bmQueue = Manager().Queue()
+        _info = {'savepath':_savepath, 'shape':_shape, 'queue':self.bmQueue, 'varname': 'timeseries'}
+        self.save_bminfo = {'alive': True, 'index': 0, 'data':np.zeros((_shape[0],1), dtype=np.float32)}
+        print(' * Queue created...')
+
+        # Create the parallel process
+        self.saveBMProcess = Process(target = save_variable_on_disk, args = (_info,), daemon = True)
+        print(' * Process created...')
+        self.saveBMProcess.start()
+        print(' * Process started...')
+
+        # Read the output matrix
+        try:
+            f = h5py.File(self.model_file_name, 'r')
+            C = np.array(f['C']).T
+        except:
+            C = spio.loadmat(self.model_file_name)['C']
+        
+        self.bendmodes['gpu'] = dict()
+        # Get only the correct outputs 
+        self.bendmodes['gpu']['C'] = cp.array(C[self.bendmodes['disp_indexes'],:], dtype=np.float32)
+        
+        # Create the bending modes
+        _shape = (self.bendmodes['_ptt'].shape[0],1)
+        self.bendmodes['gpu']['bendingmodes'] = cp.zeros(_shape, dtype=np.float32)
+        
+
+
+
+    def _initialize_gpu_env(self, var_type):
+
+        '''
+        Initialize the GPU environment and the proper variables.
+
+        Parameters:
+        -----------
+        vartype : numpy._type_
+            The type of the variable saved, it can be numpy.float32 or numpy.float64.
+        '''
         
         self.logger.info("CUDA DEBUG: creating GPU environment...")
-        self.logger.info("GPU env. Synopsis:")
+        print("GPU env. Synopsis:")
         self.gpu = dict()
         for element in self.state:
             if sparse.issparse(self.state[element]):
@@ -553,9 +690,40 @@ class FEM:
                 self.gpu[element] = cps.csr_matrix(auxiliar, shape = __size, dtype = var_type)
             else:
                 self.gpu[element] = cp.asarray(self.state[element], dtype = var_type)
-            self.logger.info("|- {0} shape : {1}".format(element, self.gpu[element].shape))
-        self.logger.info("----- Building finalized!")     
-        #sys.exit()
+            print("  |- {0} shape : {1}".format(element, self.gpu[element].shape))
+        print("  ----- Building finalized!")
+
+    
+    def _start_state_logging(self, 
+                             savepath, shape,
+                             vartype=np.float32):
+        
+        '''
+        Starts a local CPU parallel process for logging state variables.
+
+        Parameters:
+        ----------- 
+        savepath : String
+            Where ones wants to save the variable.
+        shape : Tuple or list 
+            The shape of the variable saved.
+        vartype : numpy._type_
+            The type of the variable saved, it can be numpy.float32 or numpy.float64.
+        '''
+
+        self.logger.info("CPU PARALLEL: parallel logging process...")
+        self.logger.info(" * States *")
+        # Create the information
+        self.stateQueue = Manager().Queue()
+        info = {'savepath':savepath, 'shape':shape, 'queue':self.stateQueue, 'varname': 'states'}
+        print(' * Queue created...')
+        # Create the save pack
+        self.save_info = {'alive': True, 'index': 0, 'data':np.zeros((shape[0],1), dtype=vartype)}
+        # Create the parallel process
+        self.saveStateProcess = Process(target = save_variable_on_disk, args = (info,), daemon = True)
+        print(' * Process created...')
+        self.saveStateProcess.start()
+        print(' * Process started...')
 
     def Update(self, **kwargs):
         _u = self.state['u']
@@ -571,6 +739,19 @@ class FEM:
             self.gpu['x']   = self.gpu['A'].dot(self.gpu['x']) + self.gpu['B']@self.gpu['u']
             self.gpu['y']   = self.gpu['C'].dot(self.gpu['x'])
             self.state['y'] = self.gpu['y'].get().ravel()
+            if self.log_states:
+                self.save_info['data'] = self.gpu['x'][:].get()
+                self.stateQueue.put(self.save_info)
+                self.save_info['index'] += 1
+            if self.log_bendmodes:
+                _y_wptt = cp.dot(self.bendmodes['gpu']['C'], self.gpu['x']) #self.gpu['y'][self.bendmodes['disp_indexes']]
+                # Remove PTT from output
+                _auxiliar = cp.linalg.lstsq(self.bendmodes['gpu_ptt'], _y_wptt)
+                _y_ptt = _y_wptt - cp.dot(self.bendmodes['gpu_ptt'], _auxiliar)
+                # Save the output withou ptt
+                self.save_bminfo['data'] = _y_ptt[:].get()
+                self.bmQueue.put(self.save_bminfo)
+                self.save_bminfo['index'] += 1
         else:
             _x     = self.state['x']
             x_next = self.state['A']@_x + self.state['B']@_u

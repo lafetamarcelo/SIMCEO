@@ -94,20 +94,12 @@ drivers:
         size: 4
       OSS_M1_LOS:
         size: 42
-        logs:
-          decimation: 1
       MC_M2_LOS_6D:
         size: 42
-        logs:
-          decimation: 1
       OSS_M1_lcl:
         size: 42
-        logs:
-          decimation: 1
       MC_M2_lcl_6D:
         size: 42
-        logs:
-          decimation: 1
       MC_M2_PZT_S1_D:
         size: 6
       MC_M2_PZT_S2_D:

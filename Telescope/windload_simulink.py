@@ -14,11 +14,12 @@ DEFAULT_ITEMS = ["CRING", "GIR",
                 "M2", "M2Cell", 
                 "Truss", "TopEnd"]
 
+DEFAULT_VARIABLE_PATH = './variables/'
 
 class WindLoad:
 
     '''
-        The wind loads class that runs in CUDA-GPU.
+        The wind loads class that runs in GPU with CUDA.
     '''
 
     def __init__(self, verbose=logging.INFO, **kwargs):
@@ -39,7 +40,7 @@ class WindLoad:
         if savefiles_path is not None:
             self.savepath = savefiles_path
         else:
-            self.savepath = './variables'
+            self.savepath = './variables/'
         self.fs = fs
 
         self.mem_data  = dict()
@@ -163,9 +164,13 @@ class WindLoad:
 
     def Terminate(self, **kwargs):
         return "Wind loads deleted!"
-        
 
 
+
+
+'''
+    GPU KERNELS - In CUDA and by using cupy.fuse. 
+'''
 
 getwind = cp.ElementwiseKernel(
     'T a, T b, T t',
