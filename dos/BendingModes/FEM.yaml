@@ -3,8 +3,8 @@ FEM:
     state_space_filename: ../database/matmodels/consolidated_withSSBM.mat
     log_states: true
     bending_modes:
-      ptt_path: ./variables/auxiliar/SSBM_transformation_matrices.mat
-      output_name: M1_surfaces_d
+      mode: comparison
+      segment: 1
+      ptt_path: ../database/bendingmodes/SSBM_transformation_matrices.mat
   reduction:
-    hsv_rel_threshold: 0.0
     start_idx: 3

@@ -2,6 +2,7 @@ import numpy as np
 
 import os
 import sys
+import time
 
 from scipy import sparse
 from scipy.linalg import solve_lyapunov
@@ -202,13 +203,13 @@ class FEM:
               fem_inputs=None, fem_outputs=None,
               reorder_RBM=False,
               log_states=False, log_path='./variables/', log_type=np.float32,
-              bending_modes = None):
+              bending_modes=None):
         self.logger.info('Start')
         if state_space_filename is not None:
             self.model_file_name = state_space_filename
             self.O,self.Z,self.Phim,self.Phi = ss2fem(*readStateSpace(filename=state_space_filename))
             # Read the IO indexes
-            data = spio.loadmat('./dos/FEMSimuLink/FEM_IO_WBM.mat')
+            data = spio.loadmat('../database/bendingmodes/FEM_IO_WBM.mat')
             fem_inputs=[(x[0][0],y[0]) for x,y in zip(data['FEM_IO']['inputs_name'][0,0],data['FEM_IO']['inputs_size'][0][0])]
             fem_outputs=[(x[0][0],y[0]) for x,y in zip(data['FEM_IO']['outputs_name'][0,0],data['FEM_IO']['outputs_size'][0][0])]
         if second_order_filename is not None:
@@ -232,6 +233,7 @@ class FEM:
             self.stateLogInfo = {'path': log_path, 'vartype': log_type}
 
         self.bendmodes = bending_modes
+        self.log_bendmodes = False
         if self.bendmodes is not None:
             self.log_bendmodes = True
 
@@ -575,7 +577,8 @@ class FEM:
               start_idx=0):
         
         self.logger.info('Init')
-        self.hsv_sort(start_idx=start_idx)
+        #self.hsv_sort(start_idx=start_idx)
+
         self.reduce(inputs=inputs,outputs=outputs,
                     hsv_rel_threshold=hsv_rel_threshold,
                     n_mode_max=n_mode_max)
@@ -585,21 +588,104 @@ class FEM:
                            'A':A,'B':B,'C':C,'D':None,
                            'x':np.zeros(A.shape[1]),
                            'step':0})
-
+        
         # Initializing GPU state space
         if CUDA_LIBRARY:
             self._initialize_gpu_env(var_type = np.float32)
         
         # Create the state logging process
         if self.log_states:
-            _shape_ = (A.shape[0], 20000)
+            _shape_ = (self.state['A'].shape[0], 20000)
             self._start_state_logging(self.stateLogInfo['path'], _shape_, self.stateLogInfo['vartype'])
+            time.sleep(.500)
 
         # Create the bending modes setup
         if self.bendmodes is not None:
-            self._setup_bending_modes()
+            if 'segment' in self.bendmodes:
+                self._setup_one_segment_bending_modes()
+            else:
+                self._setup_bending_modes()
+            time.sleep(.500)
         
         self.logger.info('      RUNNING SIMULATION...')
+
+    def _setup_one_segment_bending_modes(self):
+        """
+        Setup the data to compute the bending modes, for 
+        only one particular segment.
+        """
+
+        _segmentId = self.bendmodes['segment']
+        self.logger.info("CPU PARALLEL: parallel loggine porcess...")
+        self.logger.info(" * One segment Bending Modes * ")
+        self.logger.info(" * Logging the segment " + str(_segmentId) + " * ")
+        
+        try: # Read the PTT matrix from matlab files
+            self.bendmodes['ptt'] = spio.loadmat(self.bendmodes['ptt_path'])['Q_incell']
+            self.bendmodes['ptt'] = self.bendmodes['ptt'][_segmentId-1,0]
+        except:
+            self.bendmodes['ptt'] = h5py.File(self.bendmodes['ptt_path'],'r')['Q_incell']
+            self.bendmodes['ptt'] = self.bendmodes['ptt'][_segmentId-1,0]
+
+        self.logger.info(" * segment size: " + str(self.bendmodes['ptt'].shape))
+        
+        # Get the output indexes of displaciments
+        _outputName, _index = "zdisplacments_seg"+str(_segmentId), 0
+        for item in self.OUTPUTS:
+            self.logger.info(' * Checking ' + str(item[0]) + ' with size ' + str(item[1]))
+            if item[0] == _outputName:
+                _size, _outputName = item[1], '___Dummie___'
+                _indexes = range(_index, _index+_size)
+                self.logger.info('   |- (x) output found!')
+                self.logger.info('   |- initialize: ' + str(_indexes[0]))
+                self.logger.info('   |- finalize: ' + str(_indexes[-1]))
+                self.logger.info('   |- with size: ' + str(len(_indexes)))
+                self.logger.info('   |- ready for output matrix.')
+            else:
+                _index += item[1]
+
+        if _outputName != '___Dummie___':
+            self.logger.info('------- BM ERROR - (2) -------')
+            self.logger.info('Error: No entry called ' + _outputName + ' was found!')
+
+        # Create the GPU output matrix for the bending modes
+        self.logger.info(self.state['C'].shape)
+        self.bendmodes['gpu'] = {
+            'ptt' : cp.array(self.bendmodes['ptt'], dtype=np.float32),
+            'C' : cp.array(self.state['C'][_indexes,:].todense(), dtype=np.float32)
+        }
+
+        self.logger.info(' * GPU variables:' + str(self.bendmodes['gpu']['ptt'].shape) + str(self.bendmodes['gpu']['C'].shape))
+    
+        # Create the process to save in parallel the bending modes
+        _shape = (_size, 20000)
+        _firsavepath = './variables/displacements/'
+        _secsavepath = './variables/pistonTipTilt/'
+        
+        self.save_bminfo = {
+            'displacements': {'alive': True, 'index': 0, 'data':np.zeros((_shape[0],1), dtype=np.float32)},
+            'pistonTipTilt': {'alive': True, 'index': 0, 'data':np.zeros((_shape[0],1), dtype=np.float32)}
+        }
+        self.bmQueue = {
+            'displacements' : Manager().Queue(),
+            'pistonTipTilt' : Manager().Queue()
+        }
+        self.logger.info(' * Queue created...')
+
+        # Create the parallel process
+        _firinfo = {'savepath':_firsavepath, 'shape':_shape, 'queue':self.bmQueue['displacements'], 'varname': 'timeseries'}
+        _secinfo = {'savepath':_secsavepath, 'shape':_shape, 'queue':self.bmQueue['pistonTipTilt'], 'varname': 'timeseries' }
+
+        self.saveBMProcess = {
+            'displacements' : Process(target=save_variable_on_disk, args=(_firinfo,), daemon=True),
+            'pistonTipTilt' : Process(target=save_variable_on_disk, args=(_secinfo,), daemon=True)
+        }
+        self.logger.info(' * Process created...')
+
+        self.saveBMProcess['displacements'].start()
+        self.saveBMProcess['pistonTipTilt'].start()
+        self.logger.info(' * Process started...')
+
 
 
     def _setup_bending_modes(self):
@@ -609,9 +695,10 @@ class FEM:
         """
         self.logger.info("CPU PARALLEL: parallel logging process...")
         self.logger.info(" * Bending Modes *")
+        self.logger.info(self.bendmodes)
 
         if self.bendmodes is None:
-            self.logger.info('------- BM ERROR -------')
+            self.logger.info('------- BM ERROR - (1) -------')
             pass
         
         # Read the PTT matrix from matlab files
@@ -619,37 +706,22 @@ class FEM:
             self.bendmodes['_ptt'] = spio.loadmat(self.bendmodes['ptt_path'])['Q_']
         except:
             self.bendmodes['_ptt'] = h5py.File(self.bendmodes['ptt_path'], 'r')['Q_']
-        
-        self.bendmodes['gpu_ptt'] = cp.asarray(self.bendmodes['_ptt'], dtype=np.float32)
+        self.bendmodes['gpu'] = dict()
+        self.bendmodes['gpu']['ptt'] = cp.array(self.bendmodes['_ptt'], dtype=np.float32)
 
         # Get the output indexes of displaciments
         _index, _name = 0, self.bendmodes['output_name']
         for item in self.OUTPUTS:
+            self.logger.info(' * Checking ' + str(item[0]) + ' with size ' + str(item[1]))
             if item[0] == _name:
-                _size = item[1] // 3
+                _size, _name = item[1] // 3, '___Dummie___'
                 self.bendmodes['disp_indexes'] = range(_index + 2, _index + _size + 2, 3)
-                _name = '___Dummie___'
             else:
                 _index += item[1]
         
         if _name != '___Dummie___':
-            self.logger.info('------- BM ERROR -------')
+            self.logger.info('------- BM ERROR - (2) -------')
             self.logger.info('Error: No entry called ' + _name + ' was found!')
-        
-        # Create the process to save in parallel the bending modes
-        _shape = (_size, 20000)
-        _savepath = './variables/bendingmodes/'
-    
-        self.bmQueue = Manager().Queue()
-        _info = {'savepath':_savepath, 'shape':_shape, 'queue':self.bmQueue, 'varname': 'timeseries'}
-        self.save_bminfo = {'alive': True, 'index': 0, 'data':np.zeros((_shape[0],1), dtype=np.float32)}
-        print(' * Queue created...')
-
-        # Create the parallel process
-        self.saveBMProcess = Process(target = save_variable_on_disk, args = (_info,), daemon = True)
-        print(' * Process created...')
-        self.saveBMProcess.start()
-        print(' * Process started...')
 
         # Read the output matrix
         try:
@@ -658,15 +730,27 @@ class FEM:
         except:
             C = spio.loadmat(self.model_file_name)['C']
         
-        self.bendmodes['gpu'] = dict()
-        # Get only the correct outputs 
+        # Get only the z axis displacements positions and
+        # break into each segment.
         self.bendmodes['gpu']['C'] = cp.array(C[self.bendmodes['disp_indexes'],:], dtype=np.float32)
-        
-        # Create the bending modes
-        _shape = (self.bendmodes['_ptt'].shape[0],1)
-        self.bendmodes['gpu']['bendingmodes'] = cp.zeros(_shape, dtype=np.float32)
-        
 
+        # Create the bending modes output variable.
+        _size = self.bendmodes['gpu']['C'].shape[0]
+        self.bendmodes['gpu']['bendingmodes'] = cp.zeros((_size, 1), dtype=np.float32)
+
+        # Create the process to save in parallel the bending modes
+        _shape = (_size, 20000)
+        _savepath = './variables/bendingmodes/'
+
+        # Create the parallel process
+        self.bmQueue = Manager().Queue()
+        _info = {'savepath':_savepath, 'shape':_shape, 'queue':self.bmQueue, 'varname': 'timeseries'}
+        self.save_bminfo = {'alive': True, 'index': 0, 'data':np.zeros((_shape[0],1), dtype=np.float32)}
+        print(' * Queue created...')
+        self.saveBMProcess = Process(target=save_variable_on_disk, args=(_info,), daemon=True)
+        print(' * Process created...')
+        self.saveBMProcess.start()
+        print(' * Process started...')
 
 
     def _initialize_gpu_env(self, var_type):
@@ -685,11 +769,11 @@ class FEM:
         self.gpu = dict()
         for element in self.state:
             if sparse.issparse(self.state[element]):
-                auxiliar = cp.asarray(self.state[element].todense(), dtype = var_type)
+                auxiliar = cp.asarray(self.state[element].todense(), dtype=var_type)
                 __size = auxiliar.shape
-                self.gpu[element] = cps.csr_matrix(auxiliar, shape = __size, dtype = var_type)
+                self.gpu[element] = cps.csr_matrix(auxiliar, shape=__size, dtype=var_type)
             else:
-                self.gpu[element] = cp.asarray(self.state[element], dtype = var_type)
+                self.gpu[element] = cp.asarray(self.state[element], dtype=var_type)
             print("  |- {0} shape : {1}".format(element, self.gpu[element].shape))
         print("  ----- Building finalized!")
 
@@ -716,14 +800,14 @@ class FEM:
         # Create the information
         self.stateQueue = Manager().Queue()
         info = {'savepath':savepath, 'shape':shape, 'queue':self.stateQueue, 'varname': 'states'}
-        print(' * Queue created...')
+        self.logger.info(' * Queue created...')
         # Create the save pack
         self.save_info = {'alive': True, 'index': 0, 'data':np.zeros((shape[0],1), dtype=vartype)}
         # Create the parallel process
         self.saveStateProcess = Process(target = save_variable_on_disk, args = (info,), daemon = True)
-        print(' * Process created...')
+        self.logger.info(' * Process created...')
         self.saveStateProcess.start()
-        print(' * Process started...')
+        self.logger.info(' * Process started...')
 
     def Update(self, **kwargs):
         _u = self.state['u']
@@ -745,13 +829,18 @@ class FEM:
                 self.save_info['index'] += 1
             if self.log_bendmodes:
                 _y_wptt = cp.dot(self.bendmodes['gpu']['C'], self.gpu['x']) #self.gpu['y'][self.bendmodes['disp_indexes']]
-                # Remove PTT from output
-                _auxiliar = cp.linalg.lstsq(self.bendmodes['gpu_ptt'], _y_wptt)
-                _y_ptt = _y_wptt - cp.dot(self.bendmodes['gpu_ptt'], _auxiliar)
-                # Save the output withou ptt
-                self.save_bminfo['data'] = _y_ptt[:].get()
-                self.bmQueue.put(self.save_bminfo)
-                self.save_bminfo['index'] += 1
+                # Save the displacements
+                self.save_bminfo['displacements']['data'] = _y_wptt[:].get()
+                self.bmQueue['displacements'].put(self.save_bminfo['displacements'])
+                self.save_bminfo['displacements']['index'] += 1
+                # Compute the particular PTT
+                _auxiliar = lalg.lstsq(self.bendmodes['gpu']['ptt'].get(), _y_wptt.get())[0]
+                _auxiliar_gpu = cp.array(_auxiliar, dtype=np.float32)
+                _ptt = cp.dot(self.bendmodes['gpu']['ptt'], _auxiliar_gpu)
+                # Save the PTT 
+                self.save_bminfo['pistonTipTilt']['data'] = _ptt[:].get()
+                self.bmQueue['pistonTipTilt'].put(self.save_bminfo['pistonTipTilt'])
+                self.save_bminfo['pistonTipTilt']['index'] += 1
         else:
             _x     = self.state['x']
             x_next = self.state['A']@_x + self.state['B']@_u

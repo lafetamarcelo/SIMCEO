@@ -1,6 +1,7 @@
 import cupy as cp
 import numpy as np
 
+import os
 import pickle
 import logging
 import h5py
@@ -42,6 +43,9 @@ class WindLoad:
         else:
             self.savepath = './variables/'
         self.fs = fs
+
+        if not os.path.exists(self.savepath):
+            os.makedirs(self.savepath)
 
         self.mem_data  = dict()
         if load_filename is not None:

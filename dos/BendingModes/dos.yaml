@@ -50,10 +50,7 @@ drivers:
       M1_distributed_windF:
         size: 5127
     outputs:
-      Bending_modes:
-        size: 1144
-        logs:
-          decimation: 1
-
+      zdisplacments_seg1:
+        size: 752
 
   

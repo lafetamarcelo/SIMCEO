@@ -3,6 +3,7 @@ import os
 import numpy as np
 import scipy.sparse as ssp
 import scipy.linalg as sli
+import matplotlib.pyplot as plt
 
 try:
     import cupy as cp
@@ -11,12 +12,12 @@ except:
     GPU_AVAILABLE = False
 
 _cudaSettingsDefault = {
-    't_bins': 2000,
+    'n_bins': 2000,
     'vartype': np.float32
 }
 
 _cpuSettingsDefault = {
-    't_bins': 2000,
+    'n_bins': 2000,
     'vartype': np.float32
 }
 
@@ -49,8 +50,9 @@ class LargeCompute:
         # Create GPU setup
         if self._onCuda:
             self._cudaSettings = _cudaSettingsDefault
-            for item in cudaSettings:
-                self._cudaSettings[item] = cudaSettings[item]
+            if cudaSettings is not None:
+                for item in cudaSettings:
+                    self._cudaSettings[item] = cudaSettings[item]
 
         self._create_directory(self._savePath)   
 
@@ -110,6 +112,7 @@ class LargeCompute:
 
 
     def bm_to_disp_time(self, U, bending_modes,
+                    varname=None,
                     vartype=np.float32):
         # check if the variables exists
         if U is None:
@@ -119,12 +122,16 @@ class LargeCompute:
             print("Please provide the bending_modes parameter.")
             pass
         # create the directory for results
-        self._create_directory(self.savepath+'bm_to_disp_time/')
+        self._create_directory(self._savePath+'bm_to_disp_time/')
         # determine the bending mode shape
         _time = bending_modes.shape[1]
         _shape = (U.shape[0], _time)
         # create the results variable
-        result = np.memmap(self.savepath+'bm_to_disp_time/result.dat', 
+        if varname is not None:
+            _varname = varname + '.dat'
+        else:
+            _varname = 'result.dat'
+        result = np.memmap(self._savePath+'bm_to_disp_time/' + _varname, 
                         dtype=vartype, mode='w+', shape=_shape) 
         # Compute the displacements
         for k in range(_time):
@@ -139,6 +146,7 @@ class LargeCompute:
 
 
     def dot_time(self, b, a_t,
+                 varname=None,
                  vartype=np.float32):
 
         # Check if the variables exists
@@ -151,22 +159,26 @@ class LargeCompute:
         # Create the directory for results
         _savePath = self._savePath + 'dot_time/'
         self._create_directory(_savePath)
+        # Create the variable name
+        if varname is not None:
+            _varName = _savePath + varname + '.dat'
+        else:
+            _varName = _savePath + 'result.dat'
 
         if self._onCuda:
-            _varType = self._cudaSettings['varType']
+            _varType = self._cudaSettings['vartype']
             # Create the constants for simulation
-            _prop = a_t.shape[1] // self._cudaSettings['t_bins']
+            _prop = a_t.shape[1] // self._cudaSettings['n_bins']
             _shape = (b.shape[0], a_t.shape[1])
             # Create the result variable
-            _varName = _savePath + 'result.dat'
             result = np.memmap(_varName, dtype=_varType, mode='w+', shape=_shape)
             # Create the necessary GPU variables
             _gpu_b = cp.asarray(b, dtype=_varType)
             # For for each data pack
             for k in range(_prop):                
-                ki = k * self.horizon
+                ki = k * self._cudaSettings['n_bins']
                 if k != (_prop - 1):
-                    kii = (k + 1) * self.horizon
+                    kii = (k + 1) * self._cudaSettings['n_bins']
                 else:
                     kii = a_t.shape[1]
                 # Create the proper a_t on GPU

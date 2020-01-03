@@ -4,7 +4,7 @@ digraph {
 		rank=same
 		1 [label="0.5ms"]
 		"1_wind_loads" [label=<<TABLE BORDER="0" CELLBORDER="1"><TR><TD><B>wind_loads</B></TD></TR><TR><TD PORT="wind_loads_update">update</TD></TR><TR><TD PORT="wind_loads_Gravity">Gravity</TD></TR><TR><TD PORT="wind_loads_Distributed">Distributed</TD></TR><TR><TD PORT="wind_loads_TopEnd">TopEnd</TD></TR><TR><TD PORT="wind_loads_Truss">Truss</TD></TR><TR><TD PORT="wind_loads_GIR">GIR</TD></TR><TR><TD PORT="wind_loads_CRING">CRING</TD></TR><TR><TD PORT="wind_loads_M1">M1</TD></TR><TR><TD PORT="wind_loads_M1Cell">M1Cell</TD></TR><TR><TD PORT="wind_loads_M2">M2</TD></TR><TR><TD PORT="wind_loads_M2Cell">M2Cell</TD></TR></TABLE>>]
-		"1_FEM" [label=<<TABLE BORDER="0" CELLBORDER="1"><TR><TD><B>FEM</B></TD></TR><TR><TD PORT="FEM_update">update</TD></TR><TR><TD PORT="FEM_Bending_modes">Bending_modes</TD></TR></TABLE>>]
+		"1_FEM" [label=<<TABLE BORDER="0" CELLBORDER="1"><TR><TD><B>FEM</B></TD></TR><TR><TD PORT="FEM_update">update</TD></TR><TR><TD PORT="FEM_zdisplacments_seg1">zdisplacments_seg1</TD></TR></TABLE>>]
 	}
 	"1_wind_loads":wind_loads_Gravity -> "1_FEM":FEM_update
 	"1_wind_loads":wind_loads_Distributed -> "1_FEM":FEM_update
