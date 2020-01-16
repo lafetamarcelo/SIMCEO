@@ -1,9 +1,8 @@
-import numpy as np
-
 import os
 import sys
 import time
 
+import numpy as np
 from scipy import sparse
 from scipy.linalg import solve_lyapunov
 from scipy.sparse import linalg as slinalg
@@ -202,16 +201,17 @@ class FEM:
               second_order=None,
               fem_inputs=None, fem_outputs=None,
               reorder_RBM=False,
+              output_support=None,
               log_states=False, log_path='./variables/', log_type=np.float32,
-              bending_modes=None):
+              fem_io_filename=None):
         self.logger.info('Start')
+        if fem_io_filename is not None:
+            data = spio.loadmat(fem_io_filename)
+            fem_inputs=[(x[0][0],y[0]) for x,y in zip(data['FEM_IO']['inputs_name'][0,0],data['FEM_IO']['inputs_size'][0][0])]
+            fem_outputs=[(x[0][0],y[0]) for x,y in zip(data['FEM_IO']['outputs_name'][0,0],data['FEM_IO']['outputs_size'][0][0])]
         if state_space_filename is not None:
             self.model_file_name = state_space_filename
             self.O,self.Z,self.Phim,self.Phi = ss2fem(*readStateSpace(filename=state_space_filename))
-            # Read the IO indexes
-            data = spio.loadmat('../database/bendingmodes/FEM_IO_WBM.mat')
-            fem_inputs=[(x[0][0],y[0]) for x,y in zip(data['FEM_IO']['inputs_name'][0,0],data['FEM_IO']['inputs_size'][0][0])]
-            fem_outputs=[(x[0][0],y[0]) for x,y in zip(data['FEM_IO']['outputs_name'][0,0],data['FEM_IO']['outputs_size'][0][0])]
         if second_order_filename is not None:
             second_order,fem_inputs,fem_outputs = loadFEM2ndOrder(second_order_filename)
         if state_space_ABC is not None:
@@ -228,14 +228,12 @@ class FEM:
         if reorder_RBM:
             self.reorder_rbm()
         
+        if output_support is not None:
+            self.output_support = output_support
+
         self.log_states = log_states
         if self.log_states:
             self.stateLogInfo = {'path': log_path, 'vartype': log_type}
-
-        self.bendmodes = bending_modes
-        self.log_bendmodes = False
-        if self.bendmodes is not None:
-            self.log_bendmodes = True
 
         self.info()
 
@@ -277,8 +275,8 @@ class FEM:
         self.logger.info(' * # of inputs: {}'.format(self.N_INPUTS))
         self.logger.info(' * # of outputs: {}'.format(self.N_OUTPUTS))
         self.logger.info(' * # of modes: {}'.format(self.O.size))
-        self.logger.info(' * $\Phi_m$ shape: %s',self.Phim.shape)
-        self.logger.info(' * $\Phi$ shape: %s',self.Phi.shape)
+        self.logger.info(' * $Phi_m$ shape: %s',self.Phim.shape)
+        self.logger.info(' * $Phi$ shape: %s',self.Phi.shape)
         self.logger.info(' * eigen frequencies range: [{0:.3f},{1:.3f}]Hz'.format(self.O.min()/2/np.pi,self.O.max()/2/np.pi))
         self.logger.info(' * damping ratio min-max: [{0:.1f},{1:.1f}]%'.format(self.Z.min()*1e2,self.Z.max()*1e2))
         self.logger.info(' * Hankel singular values min-max: [{0:g},{1:g}]'.format(self.hsv.min(),self.hsv.max()))
@@ -401,7 +399,7 @@ class FEM:
         """
 
         s = self.N,self.N
-        OZ = self.O*self.Z;
+        OZ = self.O*self.Z
         OZ[np.isnan(OZ)] = 0
         A = sparse.bmat( [[sparse.coo_matrix(s,dtype=np.float),sparse.eye(self.N,dtype=np.float)],
                           [sparse.diags(-self.O**2),sparse.diags(-2*OZ)]],
@@ -488,7 +486,7 @@ class FEM:
         else:
             return TF[0]
 
-    def bodeMag(nu,TF,_filter_=None,legend=None,ax=None):
+    def bodeMag(self,nu,TF,_filter_=None,legend=None,ax=None):
         if not isinstance(TF,list):
             TF = [TF]
         if ax is None:
@@ -497,7 +495,7 @@ class FEM:
         for _TF_ in TF:
             if _filter_ is not None:
                 _TF_ *= _filter_
-            ax.semilogx(nu,20*np.log10(np.abs(_TF_)));
+            ax.semilogx(nu,20*np.log10(np.abs(_TF_)))
         ax.grid(which='both')
         ax.set_xlabel('Frequency [Hz]')
         ax.set_ylabel('Magnitude [dB]')
@@ -525,12 +523,15 @@ class FEM:
         n_mode_max:
             Number of modes
         """
+
         if inputs is not None:
             self.INPUTS = [(x,self.__Phim__[x].shape[0]) for x in inputs]
             self.Phim = np.vstack([self.__Phim__[x] for x in inputs])
         if outputs is not None:
+            outputs = self._verify_bendingmodes(outputs)
             self.OUTPUTS = [(x,self.__Phi__[x].shape[0]) for x in outputs]
             self.Phi = np.vstack([self.__Phi__[x] for x in outputs])
+            self._build_bendingmodes()
         if outputs_mapping is not None:
             (old_outputs,new_output,T) = outputs_mapping
             O = np.vstack([self.__Phi__[x] for x in old_outputs])
@@ -553,6 +554,70 @@ class FEM:
             self.Z = self.Z[:n_mode_max]
         self.__setprop__()
         self.info()
+    
+    def _verify_bendingmodes(self, outputs):
+        self.build_bendingmodes = False
+        if hasattr(self, 'output_support'):
+            self.build_bendingmodes = True
+            outputs.remove('bendingmodes')
+        return outputs
+    
+    def _build_bendingmodes(self):
+        if self.build_bendingmodes:
+            bm_data = self.output_support['bendingmodes']
+            Q = self._read_mat_file(bm_data['path'],'Q_incell')
+            U = self._read_mat_file(bm_data['path'],'U_')
+            Phi = self.__Phi__[bm_data['varname']]
+            if 'segment' in bm_data['variable']:
+                segId = bm_data['variable']['segment']
+                Q, U = Q[segId,0], U[segId,0]
+            else:
+                segId = 0
+                Q = np.vstack([Q[k,0] for k in range(Q.shape[0])])
+                U = np.vstack([U[k,0] for k in range(U.shape[0])])
+            _shape = U.shape 
+            _init = _shape[0] * segId + 2
+            _final = _init + _shape[0]
+            _ind = range(_init, _final, 3)
+            self.Phi = np.vstack([self.Phi, Phi[_ind,0]])
+            self.OUTPUTS.append(('zdisplacements', _shape[0]))
+            self.OUTPUTS.append(('bending_modes', _shape[1]))
+
+            _current = 0
+            for item in self.OUTPUTS:
+                if item[0] == 'zdisplacements':
+                    _indexes = [_current + k for k in range(_shape[0])]
+                else:
+                    _current += item[1]
+            
+            if CUDA_LIBRARY:
+                self.bm_states = {
+                    'ind': _indexes,
+                    'Q' : cp.array(Q, dtype=np.float32),
+                    'U.T' : cp.array(U.T, dtype=np.float32),
+                    'bmMag' : cp.zeros((U.shape[1],), dtype=np.float32),
+                    'Qinv' : cp.linalg.pinv(cp.array(Q, dtype=np.float32))
+                }
+            else:
+                self.bm_states = {
+                    'Q' : Q, 'U.T' : U.T, 'ind': _indexes,
+                    'bmMag' : np.zeros((U.shape[1],), dtype=np.float32),
+                    'Qinv' : np.linalg.pinv(Q)
+                }
+    
+    def _read_mat_file(self, filename, varname=None):
+        if varname is not None:
+            try:
+                data = sio.loadmat(filename)[varname]
+            except:
+                data = h5py.File(filename,'r')[varname]
+        else:
+            try:
+                data = sio.loadmat(filename)
+            except:
+                data = h5py.File(filename,'r')
+        return data
+
 
     def grammian(self):
         X2 = np.zeros((self.N,self.N))
@@ -597,14 +662,6 @@ class FEM:
         if self.log_states:
             _shape_ = (self.state['A'].shape[0], 20000)
             self._start_state_logging(self.stateLogInfo['path'], _shape_, self.stateLogInfo['vartype'])
-            time.sleep(.500)
-
-        # Create the bending modes setup
-        if self.bendmodes is not None:
-            if 'segment' in self.bendmodes:
-                self._setup_one_segment_bending_modes()
-            else:
-                self._setup_bending_modes()
             time.sleep(.500)
         
         self.logger.info('      RUNNING SIMULATION...')
