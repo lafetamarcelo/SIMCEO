@@ -50,7 +50,15 @@ drivers:
       M1_distributed_windF:
         size: 5127
     outputs:
-      zdisplacments_seg1:
-        size: 752
+      OSS_M1_lcl:
+        size: 42
+      MC_M2_lcl_6D:
+        size: 42
+      OSS_Hardpoint_D:
+        size: 84
+      bending_modes:
+        size: 165
+        logs:
+          decimation: 1
 
   

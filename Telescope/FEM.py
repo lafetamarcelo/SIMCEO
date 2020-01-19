@@ -227,7 +227,6 @@ class FEM:
         self.__setprop__()
         if reorder_RBM:
             self.reorder_rbm()
-        
         if output_support is not None:
             self.output_support = output_support
 
@@ -523,14 +522,15 @@ class FEM:
         n_mode_max:
             Number of modes
         """
-
+        self.logger.info('Model REDUCTION:')
         if inputs is not None:
             self.INPUTS = [(x,self.__Phim__[x].shape[0]) for x in inputs]
             self.Phim = np.vstack([self.__Phim__[x] for x in inputs])
         if outputs is not None:
             outputs = self._verify_bendingmodes(outputs)
-            self.OUTPUTS = [(x,self.__Phi__[x].shape[0]) for x in outputs]
-            self.Phi = np.vstack([self.__Phi__[x] for x in outputs])
+            if len(outputs) > 0:
+                self.OUTPUTS = [(x,self.__Phi__[x].shape[0]) for x in outputs]
+                self.Phi = np.vstack([self.__Phi__[x] for x in outputs])
             self._build_bendingmodes()
         if outputs_mapping is not None:
             (old_outputs,new_output,T) = outputs_mapping
@@ -559,15 +559,15 @@ class FEM:
         self.build_bendingmodes = False
         if hasattr(self, 'output_support'):
             self.build_bendingmodes = True
-            outputs.remove('bendingmodes')
+            outputs.remove('bending_modes')
         return outputs
     
     def _build_bendingmodes(self):
         if self.build_bendingmodes:
-            bm_data = self.output_support['bendingmodes']
+            bm_data = self.output_support['bending_modes']
             Q = self._read_mat_file(bm_data['path'],'Q_incell')
             U = self._read_mat_file(bm_data['path'],'U_')
-            Phi = self.__Phi__[bm_data['varname']]
+            Phi = self.__Phi__[bm_data['variable']['name']]
             if 'segment' in bm_data['variable']:
                 segId = bm_data['variable']['segment']
                 Q, U = Q[segId,0], U[segId,0]
@@ -577,9 +577,11 @@ class FEM:
                 U = np.vstack([U[k,0] for k in range(U.shape[0])])
             _shape = U.shape 
             _init = _shape[0] * segId + 2
-            _final = _init + _shape[0]
+            _final = _init + 3*_shape[0]
             _ind = range(_init, _final, 3)
-            self.Phi = np.vstack([self.Phi, Phi[_ind,0]])
+            self.Phi = np.vstack([self.Phi, Phi[_ind,:]])
+            print(_init,_final, len(_ind))
+            print(_shape[0], _shape[1])
             self.OUTPUTS.append(('zdisplacements', _shape[0]))
             self.OUTPUTS.append(('bending_modes', _shape[1]))
 
@@ -590,30 +592,40 @@ class FEM:
                 else:
                     _current += item[1]
             
+            print(self.OUTPUTS)
             if CUDA_LIBRARY:
                 self.bm_states = {
                     'ind': _indexes,
                     'Q' : cp.array(Q, dtype=np.float32),
                     'U.T' : cp.array(U.T, dtype=np.float32),
-                    'bmMag' : cp.zeros((U.shape[1],), dtype=np.float32),
-                    'Qinv' : cp.linalg.pinv(cp.array(Q, dtype=np.float32))
+                    'Qinv' : cp.array(np.linalg.pinv(Q), dtype=np.float32),
+                    'bm_magnitude' : cp.zeros((U.shape[1],), dtype=np.float32),
+                    'pistontiptilt': cp.zeros((U.shape[1],), dtype=np.float32),
+                    'displacements': cp.zeros((U.shape[0],), dtype=np.float32),
                 }
             else:
                 self.bm_states = {
                     'Q' : Q, 'U.T' : U.T, 'ind': _indexes,
-                    'bmMag' : np.zeros((U.shape[1],), dtype=np.float32),
+                    'bm_magnitude' : np.zeros((U.shape[1],), dtype=np.float32),
+                    'pistontiptilt': np.zeros((U.shape[1],), dtype=np.float32),
+                    'displacements': np.zeros((U.shape[1],), dtype=np.float32),
                     'Qinv' : np.linalg.pinv(Q)
                 }
+            self._info_bendingmodes()
+
+    def _info_bendingmodes(self):
+        self.logger.info('Bending modes output completed!')
+
     
     def _read_mat_file(self, filename, varname=None):
         if varname is not None:
             try:
-                data = sio.loadmat(filename)[varname]
+                data = spio.loadmat(filename)[varname]
             except:
                 data = h5py.File(filename,'r')[varname]
         else:
             try:
-                data = sio.loadmat(filename)
+                data = spio.loadmat(filename)
             except:
                 data = h5py.File(filename,'r')
         return data
@@ -643,7 +655,6 @@ class FEM:
         
         self.logger.info('Init')
         #self.hsv_sort(start_idx=start_idx)
-
         self.reduce(inputs=inputs,outputs=outputs,
                     hsv_rel_threshold=hsv_rel_threshold,
                     n_mode_max=n_mode_max)
@@ -665,149 +676,6 @@ class FEM:
             time.sleep(.500)
         
         self.logger.info('      RUNNING SIMULATION...')
-
-    def _setup_one_segment_bending_modes(self):
-        """
-        Setup the data to compute the bending modes, for 
-        only one particular segment.
-        """
-
-        _segmentId = self.bendmodes['segment']
-        self.logger.info("CPU PARALLEL: parallel loggine porcess...")
-        self.logger.info(" * One segment Bending Modes * ")
-        self.logger.info(" * Logging the segment " + str(_segmentId) + " * ")
-        
-        try: # Read the PTT matrix from matlab files
-            self.bendmodes['ptt'] = spio.loadmat(self.bendmodes['ptt_path'])['Q_incell']
-            self.bendmodes['ptt'] = self.bendmodes['ptt'][_segmentId-1,0]
-        except:
-            self.bendmodes['ptt'] = h5py.File(self.bendmodes['ptt_path'],'r')['Q_incell']
-            self.bendmodes['ptt'] = self.bendmodes['ptt'][_segmentId-1,0]
-
-        self.logger.info(" * segment size: " + str(self.bendmodes['ptt'].shape))
-        
-        # Get the output indexes of displaciments
-        _outputName, _index = "zdisplacments_seg"+str(_segmentId), 0
-        for item in self.OUTPUTS:
-            self.logger.info(' * Checking ' + str(item[0]) + ' with size ' + str(item[1]))
-            if item[0] == _outputName:
-                _size, _outputName = item[1], '___Dummie___'
-                _indexes = range(_index, _index+_size)
-                self.logger.info('   |- (x) output found!')
-                self.logger.info('   |- initialize: ' + str(_indexes[0]))
-                self.logger.info('   |- finalize: ' + str(_indexes[-1]))
-                self.logger.info('   |- with size: ' + str(len(_indexes)))
-                self.logger.info('   |- ready for output matrix.')
-            else:
-                _index += item[1]
-
-        if _outputName != '___Dummie___':
-            self.logger.info('------- BM ERROR - (2) -------')
-            self.logger.info('Error: No entry called ' + _outputName + ' was found!')
-
-        # Create the GPU output matrix for the bending modes
-        self.logger.info(self.state['C'].shape)
-        self.bendmodes['gpu'] = {
-            'ptt' : cp.array(self.bendmodes['ptt'], dtype=np.float32),
-            'C' : cp.array(self.state['C'][_indexes,:].todense(), dtype=np.float32)
-        }
-
-        self.logger.info(' * GPU variables:' + str(self.bendmodes['gpu']['ptt'].shape) + str(self.bendmodes['gpu']['C'].shape))
-    
-        # Create the process to save in parallel the bending modes
-        _shape = (_size, 20000)
-        _firsavepath = './variables/displacements/'
-        _secsavepath = './variables/pistonTipTilt/'
-        
-        self.save_bminfo = {
-            'displacements': {'alive': True, 'index': 0, 'data':np.zeros((_shape[0],1), dtype=np.float32)},
-            'pistonTipTilt': {'alive': True, 'index': 0, 'data':np.zeros((_shape[0],1), dtype=np.float32)}
-        }
-        self.bmQueue = {
-            'displacements' : Manager().Queue(),
-            'pistonTipTilt' : Manager().Queue()
-        }
-        self.logger.info(' * Queue created...')
-
-        # Create the parallel process
-        _firinfo = {'savepath':_firsavepath, 'shape':_shape, 'queue':self.bmQueue['displacements'], 'varname': 'timeseries'}
-        _secinfo = {'savepath':_secsavepath, 'shape':_shape, 'queue':self.bmQueue['pistonTipTilt'], 'varname': 'timeseries' }
-
-        self.saveBMProcess = {
-            'displacements' : Process(target=save_variable_on_disk, args=(_firinfo,), daemon=True),
-            'pistonTipTilt' : Process(target=save_variable_on_disk, args=(_secinfo,), daemon=True)
-        }
-        self.logger.info(' * Process created...')
-
-        self.saveBMProcess['displacements'].start()
-        self.saveBMProcess['pistonTipTilt'].start()
-        self.logger.info(' * Process started...')
-
-
-
-    def _setup_bending_modes(self):
-        """
-        Setup the data to compute the bending modes.
-
-        """
-        self.logger.info("CPU PARALLEL: parallel logging process...")
-        self.logger.info(" * Bending Modes *")
-        self.logger.info(self.bendmodes)
-
-        if self.bendmodes is None:
-            self.logger.info('------- BM ERROR - (1) -------')
-            pass
-        
-        # Read the PTT matrix from matlab files
-        try:
-            self.bendmodes['_ptt'] = spio.loadmat(self.bendmodes['ptt_path'])['Q_']
-        except:
-            self.bendmodes['_ptt'] = h5py.File(self.bendmodes['ptt_path'], 'r')['Q_']
-        self.bendmodes['gpu'] = dict()
-        self.bendmodes['gpu']['ptt'] = cp.array(self.bendmodes['_ptt'], dtype=np.float32)
-
-        # Get the output indexes of displaciments
-        _index, _name = 0, self.bendmodes['output_name']
-        for item in self.OUTPUTS:
-            self.logger.info(' * Checking ' + str(item[0]) + ' with size ' + str(item[1]))
-            if item[0] == _name:
-                _size, _name = item[1] // 3, '___Dummie___'
-                self.bendmodes['disp_indexes'] = range(_index + 2, _index + _size + 2, 3)
-            else:
-                _index += item[1]
-        
-        if _name != '___Dummie___':
-            self.logger.info('------- BM ERROR - (2) -------')
-            self.logger.info('Error: No entry called ' + _name + ' was found!')
-
-        # Read the output matrix
-        try:
-            f = h5py.File(self.model_file_name, 'r')
-            C = np.array(f['C']).T
-        except:
-            C = spio.loadmat(self.model_file_name)['C']
-        
-        # Get only the z axis displacements positions and
-        # break into each segment.
-        self.bendmodes['gpu']['C'] = cp.array(C[self.bendmodes['disp_indexes'],:], dtype=np.float32)
-
-        # Create the bending modes output variable.
-        _size = self.bendmodes['gpu']['C'].shape[0]
-        self.bendmodes['gpu']['bendingmodes'] = cp.zeros((_size, 1), dtype=np.float32)
-
-        # Create the process to save in parallel the bending modes
-        _shape = (_size, 20000)
-        _savepath = './variables/bendingmodes/'
-
-        # Create the parallel process
-        self.bmQueue = Manager().Queue()
-        _info = {'savepath':_savepath, 'shape':_shape, 'queue':self.bmQueue, 'varname': 'timeseries'}
-        self.save_bminfo = {'alive': True, 'index': 0, 'data':np.zeros((_shape[0],1), dtype=np.float32)}
-        print(' * Queue created...')
-        self.saveBMProcess = Process(target=save_variable_on_disk, args=(_info,), daemon=True)
-        print(' * Process created...')
-        self.saveBMProcess.start()
-        print(' * Process started...')
 
 
     def _initialize_gpu_env(self, var_type):
@@ -832,6 +700,7 @@ class FEM:
             else:
                 self.gpu[element] = cp.asarray(self.state[element], dtype=var_type)
             print("  |- {0} shape : {1}".format(element, self.gpu[element].shape))
+            
         print("  ----- Building finalized!")
 
     
@@ -884,20 +753,13 @@ class FEM:
                 self.save_info['data'] = self.gpu['x'][:].get()
                 self.stateQueue.put(self.save_info)
                 self.save_info['index'] += 1
-            if self.log_bendmodes:
-                _y_wptt = cp.dot(self.bendmodes['gpu']['C'], self.gpu['x']) #self.gpu['y'][self.bendmodes['disp_indexes']]
-                # Save the displacements
-                self.save_bminfo['displacements']['data'] = _y_wptt[:].get()
-                self.bmQueue['displacements'].put(self.save_bminfo['displacements'])
-                self.save_bminfo['displacements']['index'] += 1
-                # Compute the particular PTT
-                _auxiliar = lalg.lstsq(self.bendmodes['gpu']['ptt'].get(), _y_wptt.get())[0]
-                _auxiliar_gpu = cp.array(_auxiliar, dtype=np.float32)
-                _ptt = cp.dot(self.bendmodes['gpu']['ptt'], _auxiliar_gpu)
-                # Save the PTT 
-                self.save_bminfo['pistonTipTilt']['data'] = _ptt[:].get()
-                self.bmQueue['pistonTipTilt'].put(self.save_bminfo['pistonTipTilt'])
-                self.save_bminfo['pistonTipTilt']['index'] += 1
+            if self.build_bendingmodes:
+                self.bm_states['displacements'] = self.gpu['y'][self.bm_states['ind']]
+                self.bm_states['pistontiptilt'] = cp.dot(self.bm_states['Qinv'],self.bm_states['displacements'])
+                self.bm_states['pistontiptilt'] = cp.dot(self.bm_states['Q'],self.bm_states['pistontiptilt'])
+                self.bm_states['displacements'] = self.bm_states['displacements'] - self.bm_states['pistontiptilt']
+                self.bm_states['bm_magnitude'] = cp.dot(self.bm_states['U.T'], self.bm_states['displacements'])
+                self.state['y'] = np.concatenate((self.state['y'], self.bm_states['bm_magnitude'].get()), axis=0)
         else:
             _x     = self.state['x']
             x_next = self.state['A']@_x + self.state['B']@_u
@@ -916,6 +778,10 @@ class FEM:
             for t,s in self.OUTPUTS:
                 b += s
                 if t in outputs:
+                    #print(t)
+                    #print(self.state['y'].shape)
+                    #print(a,b)
+                    #print(b-a)
                     d[t] = self.state['y'][a:b]
                     """
                     if t in self.P:

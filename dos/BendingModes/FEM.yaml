@@ -2,12 +2,11 @@ FEM:
   build:
     fem_io_filename: ../database/bendingmodes/FEM_IO_WSTDP.mat
     state_space_filename: ../database/matmodels/consolidated_withSTDP.mat
-    bending_modes:
-      u_path: justapath
-      q_path: justapath
-      mode: comparison
-      segment: 1
-      ptt_path: ../database/bendingmodes/STBM_transformation_matrices.mat
-      log_states: true
+    
+    output_support:
+      bending_modes:
+        variable: {name: M1_surfaces_d, segment: 0}
+        path: ../database/bendingmodes/STBM_transformation_matrices.mat
+  
   reduction:
     start_idx: 3
