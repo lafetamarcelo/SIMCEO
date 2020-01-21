@@ -50,26 +50,30 @@ def readStateSpace(filename=None,ABC=None):
             AG=f['A']
             A = sparse.csr_matrix((np.array(AG['data']),AG['ir'],AG['jc']))
             A = A.transpose()
-            B,C = [sparse.csr_matrix(np.array(f[x]).T) for x in list('BC')]
+            B,C,D = [sparse.csr_matrix(np.array(f[x]).T) for x in list('BCD')]
         except:
-            f = spio.loadmat(filename)
+            f = spio.loadmat(filename, variable_names=('A','B','C','D'))
             A = sparse.csr_matrix(f['A'])
             B = sparse.csr_matrix(f['B'])
             C = sparse.csr_matrix(f['C'])
+            D = sparse.csr_matrix(f['D'])
     if ABC is not None:
         A = sparse.csr_matrix(ABC[0])
         B = sparse.csr_matrix(ABC[1])
         C = sparse.csr_matrix(ABC[2])
+        D = np.zeros((1,1))
     h = int(A.shape[0]/2)
     print('State space synopsis:')
     print(' * A shape: {0} ; Block diagonal test (0,{5:d},1,1): {1} {2} {3} {4}'.format(A.shape,
-          A[:h,:h].diagonal().sum(),
-          A[:h,h:].diagonal().sum(),
-          A[h:,:h].diagonal().sum()/A[h:,:h].sum(),
-          A[h:,h:].diagonal().sum()/A[h:,h:].sum(),int(A.shape[0]/2)))
+          round(A[:h,:h].diagonal().sum(),2),
+          round(A[:h,h:].diagonal().sum(),2),
+          round(A[h:,:h].diagonal().sum()/A[h:,:h].sum(),2),
+          round(A[h:,h:].diagonal().sum()/A[h:,h:].sum(),2), 
+          int(A.shape[0]/2)))
     print(' * B shape:',B.shape)
     print(' * C shape:',C.shape)
-    return (A,B,C,None)
+    print(' * D shape:',D.shape)
+    return (A,B,C,D)
 
 def loadFEM2ndOrder(filename):
     """
@@ -117,15 +121,18 @@ def ss2fem(*args):
 
     Returns
     -------
-    O, Z, Phim, Phi: the eigen frequencies, the damping coefficients, the inputs to modes and modes to outputs matrix transforms
+    O, Z, Phim, Phi, Phid: the eigen frequencies, the damping coefficients, 
+        the inputs to modes, modes to outputs matrix transforms, and the 
+        respective residual matrix.
     """
-    A,B,C = args[:3]
+    A,B,C,D = args[:4]
     h = int(A.shape[0]/2)
     O = np.sqrt(-A[h:,:h].diagonal())
     Z = -0.5*A[h:,h:].diagonal()/O
-    Phi = C[:,:-h]
+    Phi  = C[:,:-h]
     Phim = B[h:,:].T
-    return O,Z,Phim.toarray(),Phi.toarray()
+    Phid = D[:,:]
+    return O,Z,Phim.toarray(),Phi.toarray(),Phid.toarray()
 
 def freqrep(nu,Phi,Phim,O,Z,n_mode_max=None):
     """
@@ -205,17 +212,18 @@ class FEM:
               log_states=False, log_path='./variables/', log_type=np.float32,
               fem_io_filename=None):
         self.logger.info('Start')
+        self._flagger(initialize=True)
         if fem_io_filename is not None:
             data = spio.loadmat(fem_io_filename)
             fem_inputs=[(x[0][0],y[0]) for x,y in zip(data['FEM_IO']['inputs_name'][0,0],data['FEM_IO']['inputs_size'][0][0])]
             fem_outputs=[(x[0][0],y[0]) for x,y in zip(data['FEM_IO']['outputs_name'][0,0],data['FEM_IO']['outputs_size'][0][0])]
         if state_space_filename is not None:
             self.model_file_name = state_space_filename
-            self.O,self.Z,self.Phim,self.Phi = ss2fem(*readStateSpace(filename=state_space_filename))
+            self.O,self.Z,self.Phim,self.Phi,self.Phid = ss2fem(*readStateSpace(filename=state_space_filename))
         if second_order_filename is not None:
             second_order,fem_inputs,fem_outputs = loadFEM2ndOrder(second_order_filename)
         if state_space_ABC is not None:
-            self.O,self.Z,self.Phim,self.Phi = ss2fem(*readStateSpace(ABC=state_space_ABC))
+            self.O,self.Z,self.Phim,self.Phi,self.Phid = ss2fem(*readStateSpace(ABC=state_space_ABC))
         if second_order is not None:
             self.O,self.Z,self.Phim,self.Phi = second_order
             self.O *= 2*np.pi
@@ -237,6 +245,27 @@ class FEM:
         self.info()
 
         return "FEM"
+    
+    def _flagger(self, flag_name=None, 
+                    initial_state=True, 
+                    initialize=None):
+        '''
+        Create the flagger system for conditionals during real-time simulation.
+        
+        Parameters
+        ----------
+        inputs:
+            - flag_name (String):
+            - initialize (Boolean):
+        '''
+
+        if initialize is not None:
+            self.flags = dict()
+        
+        if flag_name is not None:
+            if flag_name not in self.flags:
+                self.flags[flag_name] = initial_state
+
 
     def __setprop__(self):
         self.N = self.O.size
@@ -246,6 +275,11 @@ class FEM:
         c = np.cumsum([x[1] for x in self.OUTPUTS])
         self.N_OUTPUTS = c[-1]
         self.outs_idx = c[:-1]
+        if self.Phid.shape[0] > 1:
+            self._flagger(flag_name='residues')
+            self.__Phid__ = {x:y for y,x in zip(np.split(self.Phid,self.ins_idx, axis = 1),[x[0] for x in self.INPUTS])}
+        else:
+            self._flagger(flag_name='residues', initial_state=False)
         self.__Phim__ = {x:y for y,x in zip(np.split(self.Phim,self.ins_idx),[x[0] for x in self.INPUTS])}
         self.__Phi__ = {x:y for y,x in zip(np.split(self.Phi,self.outs_idx),[x[0] for x in self.OUTPUTS])}
         m = self.O==0
@@ -394,7 +428,7 @@ class FEM:
 
         Returns:
         --------
-        A,B,C : the state space A, B and C matrices
+        A,B,C,D : the state space A, B, C and D matrices
         """
 
         s = self.N,self.N
@@ -406,28 +440,28 @@ class FEM:
         B = sparse.bmat( [[sparse.coo_matrix((self.N,self.Phim.shape[0]),dtype=np.float)],
                                 [self.Phim.T]],format='csr')
         C = sparse.bmat( [[self.Phi,sparse.coo_matrix((self.Phi.shape[0],self.N),dtype=np.float)]],format='csr')
+        D = sparse.bmat( self.Phid, format='csr')
         h = int(A.shape[0]/2)
         print('State space synopsis:')
-        print(' * A shape: {0} ; Block diagonal test (0,{5:d},1,1): {1} {2} {3} {4}'.format(A.shape,
-              A[:h,:h].diagonal().sum(),
-              A[:h,h:].diagonal().sum(),
-              A[h:,:h].diagonal().sum()/A[h:,:h].sum(),
-              A[h:,h:].diagonal().sum()/A[h:,h:].sum(),int(A.shape[0]/2)))
+        print(' * A shape: {0} ; Block diagonal test (0,{5:d},1,1): {1} {2} {3} {4}'.format(
+              A.shape,
+              round(A[:h,:h].diagonal().sum(),2),
+              round(A[:h,h:].diagonal().sum(),2),
+              round(A[h:,:h].diagonal().sum()/A[h:,:h].sum(),2),
+              round(A[h:,h:].diagonal().sum()/A[h:,h:].sum(),2),
+              int(A.shape[0]/2)))
         print(' * B shape:',B.shape)
         print(' * C shape:',C.shape)
+        print(' * D shape:',D.shape)
+
         if dt is not None:
             if CUDA_LIBRARY:
                 Ad,Bd = self.gpu_c2s(A,B,dt)
             else:
                 Ad,Bd = self.c2s(A,B,dt)
-            print(' * discrete A shape: {0} ; Block diagonal test (0,{5:d},1,1): {1} {2} {3} {4}'.format(A.shape,
-                  Ad[:h,:h].diagonal().sum(),
-                  Ad[:h,h:].diagonal().sum(),
-                  Ad[h:,:h].diagonal().sum()/A[h:,:h].sum(),
-                  Ad[h:,h:].diagonal().sum()/A[h:,h:].sum(),int(A.shape[0]/2)))
-            return Ad,Bd,C
+            return Ad,Bd,C,D
         else:
-            return A,B,C
+            return A,B,C,D
 
     def __call__(self,inputs,outputs):
         u = np.vstack(inputs.values())
@@ -522,10 +556,17 @@ class FEM:
         n_mode_max:
             Number of modes
         """
-        self.logger.info('Model REDUCTION:')
+        self.logger.info(' => Model reduction')
+        x_size, in_size, out_size = self.O.size, self.Phim.shape[0], self.Phi.shape[0]
+        if self.flags['residues']:
+            total_complexity = x_size * (x_size+2*in_size+out_size)
+        else:
+            total_complexity = x_size * (x_size+in_size+out_size)
         if inputs is not None:
             self.INPUTS = [(x,self.__Phim__[x].shape[0]) for x in inputs]
             self.Phim = np.vstack([self.__Phim__[x] for x in inputs])
+            if self.flags['residues']:
+                self.Phid = np.hstack([self.__Phid__[x] for x in inputs])
         if outputs is not None:
             outputs = self._verify_bendingmodes(outputs)
             if len(outputs) > 0:
@@ -553,6 +594,14 @@ class FEM:
             self.O = self.O[:n_mode_max]
             self.Z = self.Z[:n_mode_max]
         self.__setprop__()
+        x_size, in_size, out_size = self.O.size, self.Phim.shape[0], self.Phi.shape[0]
+        if self.flags['residues']:
+            final_complexity = x_size * (x_size+2*in_size+out_size)
+        else:
+            final_complexity = x_size * (x_size+in_size+out_size)
+        factor = round(100*( 1-(final_complexity/total_complexity)),2)
+        self.logger.info('   |- Model reduced in: ' + str(factor) + '% of complexity.')
+        self.logger.info(' <= Reduction procedure finished!')
         self.info()
     
     def _verify_bendingmodes(self, outputs):
@@ -563,6 +612,7 @@ class FEM:
         return outputs
     
     def _build_bendingmodes(self):
+        self.logger.info('  => Setting up the bending modes:')
         if self.build_bendingmodes:
             bm_data = self.output_support['bending_modes']
             Q = self._read_mat_file(bm_data['path'],'Q_incell')
@@ -570,9 +620,11 @@ class FEM:
             Phi = self.__Phi__[bm_data['variable']['name']]
             if 'segment' in bm_data['variable']:
                 segId = bm_data['variable']['segment']
+                self.logger.info('    |- segment: ' + str(segId))
                 Q, U = Q[segId,0], U[segId,0]
             else:
                 segId = 0
+                self.logger.info('   |- segment: all segments')
                 Q = np.vstack([Q[k,0] for k in range(Q.shape[0])])
                 U = np.vstack([U[k,0] for k in range(U.shape[0])])
             _shape = U.shape 
@@ -580,8 +632,6 @@ class FEM:
             _final = _init + 3*_shape[0]
             _ind = range(_init, _final, 3)
             self.Phi = np.vstack([self.Phi, Phi[_ind,:]])
-            print(_init,_final, len(_ind))
-            print(_shape[0], _shape[1])
             self.OUTPUTS.append(('zdisplacements', _shape[0]))
             self.OUTPUTS.append(('bending_modes', _shape[1]))
 
@@ -592,7 +642,6 @@ class FEM:
                 else:
                     _current += item[1]
             
-            print(self.OUTPUTS)
             if CUDA_LIBRARY:
                 self.bm_states = {
                     'ind': _indexes,
@@ -602,6 +651,7 @@ class FEM:
                     'bm_magnitude' : cp.zeros((U.shape[1],), dtype=np.float32),
                     'pistontiptilt': cp.zeros((U.shape[1],), dtype=np.float32),
                     'displacements': cp.zeros((U.shape[0],), dtype=np.float32),
+                    'on_cuda': True
                 }
             else:
                 self.bm_states = {
@@ -609,12 +659,17 @@ class FEM:
                     'bm_magnitude' : np.zeros((U.shape[1],), dtype=np.float32),
                     'pistontiptilt': np.zeros((U.shape[1],), dtype=np.float32),
                     'displacements': np.zeros((U.shape[1],), dtype=np.float32),
-                    'Qinv' : np.linalg.pinv(Q)
+                    'Qinv' : np.linalg.pinv(Q),
+                    'on_cuda': False
                 }
             self._info_bendingmodes()
 
     def _info_bendingmodes(self):
-        self.logger.info('Bending modes output completed!')
+        self.logger.info('    |- bending modes size: ' + str(self.bm_states['bm_magnitude'].shape[0]))
+        self.logger.info('    |- displacements size: ' + str(self.bm_states['displacements'].shape[0]))
+        self.logger.info('    |- This module includes the last 3 unused bending modes!!!')
+        self.logger.info('    |- running on GPU: ' + str(self.bm_states['on_cuda']))
+        self.logger.info('  <= Bending modes output setup completed!')
 
     
     def _read_mat_file(self, filename, varname=None):
@@ -658,10 +713,10 @@ class FEM:
         self.reduce(inputs=inputs,outputs=outputs,
                     hsv_rel_threshold=hsv_rel_threshold,
                     n_mode_max=n_mode_max)
-        A,B,C = self.state_space(dt=dt)
+        A,B,C,D = self.state_space(dt=dt)
         self.state.update({'u':np.zeros(self.N_INPUTS),
                            'y':np.zeros(self.N_OUTPUTS),
-                           'A':A,'B':B,'C':C,'D':None,
+                           'A':A,'B':B,'C':C,'D':D,
                            'x':np.zeros(A.shape[1]),
                            'step':0})
         
@@ -689,8 +744,8 @@ class FEM:
             The type of the variable saved, it can be numpy.float32 or numpy.float64.
         '''
         
-        self.logger.info("CUDA DEBUG: creating GPU environment...")
-        print("GPU env. Synopsis:")
+        self.logger.info(" => Settung up GPU environment...")
+        self.logger.info("  * GPU environment synopsis:")
         self.gpu = dict()
         for element in self.state:
             if sparse.issparse(self.state[element]):
@@ -699,9 +754,9 @@ class FEM:
                 self.gpu[element] = cps.csr_matrix(auxiliar, shape=__size, dtype=var_type)
             else:
                 self.gpu[element] = cp.asarray(self.state[element], dtype=var_type)
-            print("  |- {0} shape : {1}".format(element, self.gpu[element].shape))
+            self.logger.info("    |- {0} shape : {1}".format(element, self.gpu[element].shape))
             
-        print("  ----- Building finalized!")
+        self.logger.info(" <= GPU environment building finalized!")
 
     
     def _start_state_logging(self, 
@@ -721,19 +776,20 @@ class FEM:
             The type of the variable saved, it can be numpy.float32 or numpy.float64.
         '''
 
-        self.logger.info("CPU PARALLEL: parallel logging process...")
-        self.logger.info(" * States *")
+        self.logger.info(" => CPU PARALLEL logging process...")
+        self.logger.info("  * Building parallel state logging *")
         # Create the information
         self.stateQueue = Manager().Queue()
         info = {'savepath':savepath, 'shape':shape, 'queue':self.stateQueue, 'varname': 'states'}
-        self.logger.info(' * Queue created...')
+        self.logger.info('  * Queue created...')
         # Create the save pack
         self.save_info = {'alive': True, 'index': 0, 'data':np.zeros((shape[0],1), dtype=vartype)}
         # Create the parallel process
         self.saveStateProcess = Process(target = save_variable_on_disk, args = (info,), daemon = True)
-        self.logger.info(' * Process created...')
+        self.logger.info('  * Process created...')
         self.saveStateProcess.start()
-        self.logger.info(' * Process started...')
+        self.logger.info('  * Process started...')
+        self.logger.info(' <= Parallel process created!')
 
     def Update(self, **kwargs):
         _u = self.state['u']
@@ -745,9 +801,12 @@ class FEM:
             a += s
 
         if CUDA_LIBRARY:
-            self.gpu['u']   = cp.array(_u, dtype = np.float32)
-            self.gpu['x']   = self.gpu['A'].dot(self.gpu['x']) + self.gpu['B']@self.gpu['u']
-            self.gpu['y']   = self.gpu['C'].dot(self.gpu['x'])
+            self.gpu['u'] = cp.array(_u, dtype = np.float32)
+            self.gpu['x'] = self.gpu['A'].dot(self.gpu['x']) + self.gpu['B']@self.gpu['u']
+            if self.flags['residues']:
+                self.gpu['y'] = self.gpu['C'].dot(self.gpu['x']) + self.gpu['D'].dot(self.gpu['u'])
+            else:
+                self.gpu['y'] = self.gpu['C'].dot(self.gpu['x']) 
             self.state['y'] = self.gpu['y'].get().ravel()
             if self.log_states:
                 self.save_info['data'] = self.gpu['x'][:].get()
@@ -778,10 +837,6 @@ class FEM:
             for t,s in self.OUTPUTS:
                 b += s
                 if t in outputs:
-                    #print(t)
-                    #print(self.state['y'].shape)
-                    #print(a,b)
-                    #print(b-a)
                     d[t] = self.state['y'][a:b]
                     """
                     if t in self.P:
