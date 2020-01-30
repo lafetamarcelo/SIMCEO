@@ -99,7 +99,7 @@ class LargeCompute:
                 _disp_pack = cp.asarray(displacements[:,ki:kii], dtype=_vartype)
                 _dyn_ptt = cp.linalg.lstsq(_const_ptt, _disp_pack)[0]
                 _result = _disp_pack - cp.dot(_const_ptt, _dyn_ptt)
-                result[:,ki,kii] = _result[:,:].get()
+                result[:,ki:kii] = _result[:,:].get()
         else:
             #result = np.zeros(_size)
             for k in range(_size[1]):

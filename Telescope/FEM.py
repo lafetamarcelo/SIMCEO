@@ -625,8 +625,8 @@ class FEM:
             else:
                 segId = 0
                 self.logger.info('   |- segment: all segments')
-                Q = np.vstack([Q[k,0] for k in range(Q.shape[0])])
-                U = np.vstack([U[k,0] for k in range(U.shape[0])])
+                Q = self._create_diag_from_mat(mat=Q) #np.vstack([Q[k,0] for k in range(Q.shape[0])])
+                U = self._create_diag_from_mat(mat=U) #np.vstack([U[k,0] for k in range(U.shape[0])])
             _shape = U.shape 
             _init = _shape[0] * segId + 2
             _final = _init + 3*_shape[0]
@@ -663,6 +663,23 @@ class FEM:
                     'on_cuda': False
                 }
             self._info_bendingmodes()
+
+    def _create_diag_from_mat(self, mat=None):
+        _size = mat.shape[0]
+        _lin, _col = [], []
+        for k in range(_size):
+            _lin.append(mat[k,0].shape[0])
+            _col.append(mat[k,0].shape[1])
+        
+        ki, kii = 0, 0
+        _shape = (sum(_lin),sum(_col))
+        _result = np.zeros(_shape)
+        for k in range(_size):
+            xi, xii = ki+_lin[k], kii+_col[k]
+            _result[ki:xi,kii:xii] = mat[k,0][:,:]
+            ki, kii = xi, xii
+        
+        return _result
 
     def _info_bendingmodes(self):
         self.logger.info('    |- bending modes size: ' + str(self.bm_states['bm_magnitude'].shape[0]))
@@ -816,8 +833,8 @@ class FEM:
                 self.bm_states['displacements'] = self.gpu['y'][self.bm_states['ind']]
                 self.bm_states['pistontiptilt'] = cp.dot(self.bm_states['Qinv'],self.bm_states['displacements'])
                 self.bm_states['pistontiptilt'] = cp.dot(self.bm_states['Q'],self.bm_states['pistontiptilt'])
-                self.bm_states['displacements'] = self.bm_states['displacements'] - self.bm_states['pistontiptilt']
-                self.bm_states['bm_magnitude'] = cp.dot(self.bm_states['U.T'], self.bm_states['displacements'])
+                self.bm_states['displacements'] = self.bm_states['displacements'] #- self.bm_states['pistontiptilt']
+                self.bm_states['bm_magnitude']  = cp.dot(self.bm_states['U.T'], self.bm_states['displacements'])
                 self.state['y'] = np.concatenate((self.state['y'], self.bm_states['bm_magnitude'].get()), axis=0)
         else:
             _x     = self.state['x']
