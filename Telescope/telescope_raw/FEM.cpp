@@ -26,6 +26,7 @@ using namespace std;
         int height;
         int stride;
         float* elements;
+        size_t size;
     } GMatrix;
 
     typedef struct {
@@ -137,10 +138,8 @@ using namespace std;
             __syncthreads();
         }
 
-        // Compute the states influence
-        float a1; float a2;
-
-        if (row )
+        // Compute the state influence and 
+        // accumulate on the xValue
         
 
         // Write Csub to device memory 
@@ -198,7 +197,7 @@ using namespace std;
             // computation is done before laoding two new
             // sub-matrices of A and B in the next iteration
             __syncthreads();
-        } 
+        }
 
         // Write Csub to device memory 
         // Each thread writes one element
@@ -219,8 +218,9 @@ using namespace std;
         float xValue = 0;
 
         // Compute the input influence
+        int init_address = row * B.stride;
         for (int k = 0; k < IN_SIZE; k++)
-            xValue += B.elements[row * B.stride + k] * u.elements[k];
+            xValue += B.elements[init_address + k] * u.elements[k];
         
         // Compute the state influence
         xValue += A.elements[2*row] * x.elements[i] + A.elements[2*row + 1] * x.elements[i+1];
@@ -283,12 +283,12 @@ class FEM {
             }
         }
 
-        void Update (double* u) {
+        void Update (float* u) {
             
             updateState( u );
         }
 
-        list <VectorXd> Output (vector <string> names) {
+        list <float> Output (vector <string> names) {
             
             #if GPU_MODE
 
@@ -428,12 +428,18 @@ class FEM {
                 state.y.height = state.y.stride = n_outputs; state.y.width = 1;
 
                 // Laod matrices to device memory
-                size_t size = state.x.height * sizeof(float);
-                cudaMalloc(&state.x.elements, size);
-                size = state.u.height * sizeof(float);
-                cudaMalloc(&state.u.elements, size);
-                size = state.y.height * sizeof(float);
-                cudaMalloc(&state.y.elements, size);
+                state.x.size = state.x.height * sizeof(float);
+                cudaMalloc(&state.x.elements, state.x.size);
+                state.u.size = state.u.height * sizeof(float);
+                cudaMalloc(&state.u.elements, state.u.size);
+                state.y.size = state.y.height * sizeof(float);
+                cudaMalloc(&state.y.elements, state.y.size);
+                
+                // Initialize the state variable
+                float init_state[n_states];
+                for (int k = 0; k < n_states; k++)
+                    init_state[k] = 0;
+                cudaMemcpy(state.x.elements, init_state, state.x.size, cudaMemcpyHostToDevice);
 
             #else 
             #if SPARSE_MODE
@@ -450,8 +456,8 @@ class FEM {
         void updateState (float* u) {
  
             #if GPU_MODE
-                cudaMemcpy(state.u.elements, u, state.u.height, cudaMemcpyHostToDevice);
-                updateStateKernel<<1,state.x.height>>(model.A.elements, model.B.elements, state.u.elements, state.x.height, state.x.elements);
+                cudaMemcpy(state.u.elements, u, state.u.size, cudaMemcpyHostToDevice);
+                updateStateKernel<<<1,state.x.height>>>(model.A.elements, model.B.elements, state.u.elements, state.u.height, state.x.elements);
             #else //GPU_MODE
             #if SPARSE_MODE
             #else //SPARSE_MODE

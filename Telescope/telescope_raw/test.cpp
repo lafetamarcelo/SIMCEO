@@ -4,25 +4,28 @@
 #include <array>
 using namespace std;
 
-#include "Eigen/Dense"
-using namespace Eigen;
 
 #include "FEM.cpp"
 
 // Variables
 #define TEST_MODE false
+#define GPU_MODE true
 
 // Macros
 #define INIT_FROM_ARRAY(ar) (ar, ar + sizeof(ar) / sizeof(ar[0]))
 
-void showlist(list <VectorXd> g) 
-{ 
-    list <VectorXd> :: iterator it; 
-    for(it = g.begin(); it != g.end(); ++it) 
-        cout << *it << endl; 
-    cout << '\n'; 
-} 
+#if !GPU_MODE
+    #include "Eigen/Dense"
+    using namespace Eigen;
 
+    void showlist(list <VectorXd> g) 
+    { 
+        list <VectorXd> :: iterator it; 
+        for(it = g.begin(); it != g.end(); ++it) 
+            cout << *it << endl; 
+        cout << '\n'; 
+    } 
+#endif
 
 int main(void) {
     
@@ -54,37 +57,57 @@ int main(void) {
     fem.Start(false);
 
     // Show some informations
-    cout << "Showing the A matrix:" << endl;
-    cout << fem.model.A << endl;
-    cout << "Showing the B matrix:" << endl;
-    cout << fem.model.B << endl;
-    cout << "Showing the C matrix:" << endl;
-    cout << fem.model.C << endl;
-    cout << "Showing the D matrix:" << endl;
-    cout << fem.model.D << endl;
-    
+    #if GPU_MODE
+        cout << "Showing the A matrix:" << endl;
+        cout << fem.model.A.elements << endl;
+        cout << "Showing the B matrix:" << endl;
+        cout << fem.model.B.elements << endl;
+        cout << "Showing the C matrix:" << endl;
+        cout << fem.model.C.elements << endl;
+        cout << "Showing the D matrix:" << endl;
+        cout << fem.model.D.elements << endl;
+    #else
+        cout << "Showing the A matrix:" << endl;
+        cout << fem.model.A << endl;
+        cout << "Showing the B matrix:" << endl;
+        cout << fem.model.B << endl;
+        cout << "Showing the C matrix:" << endl;
+        cout << fem.model.C << endl;
+        cout << "Showing the D matrix:" << endl;
+        cout << fem.model.D << endl;
+    #endif
     // Testing model update
     cout << "Updating the model states..." << endl; 
     
-    double inputs[3] = {1.0, 1.0, 1.0};
+    float inputs[3] = {1.0, 1.0, 1.0};
     fem.Update( inputs );
 
     inputs[0] = 0.1; inputs[1] = 0.1; inputs[2] = 0.1;
     fem.Update( inputs );
 
-    cout << "Computing the output..." << endl;
-    list<VectorXd> outputs = fem.Output( oVecNames );
-
+    #if !GPU_MODE
+        cout << "Computing the output..." << endl;
+        list<VectorXd> outputs = fem.Output( oVecNames );
+    #endif
+    
     // Show the results
-    cout << "The computed results:" << endl;
-    cout << "   -- the states:" << endl;
-    cout << fem.state.x << endl;
-    cout << "   -- the inputs:" << endl;
-    cout << fem.state.u << endl;
-    cout << "   -- the outputs:" << endl;
-    showlist(outputs);
-    cout << "The front of output:" << endl;
-    cout << outputs.front() << endl; 
-    cout << "The back of output:" << endl;
-    cout << outputs.back() << endl; 
+    #if GPU_MODE
+        cout << "The computed results:" << endl;
+        cout << "   -- the states:" << endl;
+        cout << fem.state.x.elements << endl;
+        cout << "   -- the inputs:" << endl;
+        cout << fem.state.u.elements << endl;
+    #else
+        cout << "The computed results:" << endl;
+        cout << "   -- the states:" << endl;
+        cout << fem.state.x << endl;
+        cout << "   -- the inputs:" << endl;
+        cout << fem.state.u << endl;
+        cout << "   -- the outputs:" << endl;
+        showlist(outputs);
+        cout << "The front of output:" << endl;
+        cout << outputs.front() << endl; 
+        cout << "The back of output:" << endl;
+        cout << outputs.back() << endl; 
+    #endif
 }
